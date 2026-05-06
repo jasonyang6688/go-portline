@@ -40,6 +40,16 @@ const settingsNav = [
   { id: 'security', label: 'SSH / Security', meta: 'keepalive, secrets' },
   { id: 'about', label: 'About', meta: 'version and data' },
 ]
+
+function connectionMeta(conn: Connection) {
+  if (conn.kind === 'local') {
+    return 'local shell'
+  }
+  if (conn.kind === 'wsl') {
+    return conn.wslDistro || 'WSL'
+  }
+  return `${conn.user}@${conn.host}`
+}
 </script>
 
 <template>
@@ -67,7 +77,7 @@ const settingsNav = [
               <i :class="`env-dot env-${conn.env || 'dev'}`" />
               {{ conn.name }}
             </span>
-            <small>{{ conn.kind === 'wsl' ? conn.wslDistro || 'WSL' : `${conn.user}@${conn.host}` }}</small>
+            <small>{{ connectionMeta(conn) }}</small>
           </button>
         </section>
 
@@ -96,7 +106,7 @@ const settingsNav = [
             <i :class="`env-dot env-${conn.env || 'dev'}`" />
             {{ conn.name }}
           </span>
-          <small>{{ sessionForConnection(conn.id) ? 'observing' : (conn.kind === 'wsl' ? conn.wslDistro || 'WSL' : `${conn.user}@${conn.host}`) }}</small>
+          <small>{{ sessionForConnection(conn.id) ? 'observing' : connectionMeta(conn) }}</small>
         </button>
       </section>
       <p class="hint">Select a server to open a session and show CPU, memory, process, disk and load telemetry in the workspace.</p>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ensureQuickCommandsLoaded, quickCommands, reorderQuickCommands } from '../../stores/quickCommands'
 import type { QuickCommand } from '../../stores/quickCommands'
 import type { Session } from '../../stores/sessions'
+import { sessionDisplayName } from '../../stores/sessions'
 import { sendCommandToSession } from '../../stores/terminalBridge'
 import { preferences } from '../../stores/uiSettings'
 import { requestCommandCreate } from '../../stores/workspace'
@@ -11,6 +12,8 @@ const props = defineProps<{ activeSession: Session | null }>()
 const draggingCommandId = ref<number | null>(null)
 const dragOverCommandId = ref<number | null>(null)
 const didDrag = ref(false)
+const pointerStart = ref<{ commandId: number; pointerId: number; x: number; y: number } | null>(null)
+const pointerDragging = ref(false)
 
 onMounted(ensureQuickCommandsLoaded)
 
@@ -42,32 +45,85 @@ function addCommand() {
   requestCommandCreate(props.activeSession.connectionId)
 }
 
-function startDrag(event: DragEvent, command: QuickCommand) {
+function commandAtPoint(x: number, y: number) {
+  const target = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-command-id]')
+  if (!target?.dataset.commandId) return null
+  const commandId = Number(target.dataset.commandId)
+  return visibleCommands.value.find(command => command.id === commandId) ?? null
+}
+
+function startPointerDrag(event: PointerEvent, command: QuickCommand) {
+  if (event.button !== 0 || !props.activeSession?.connected) return
+  pointerStart.value = { commandId: command.id, pointerId: event.pointerId, x: event.clientX, y: event.clientY }
   draggingCommandId.value = command.id
   dragOverCommandId.value = command.id
-  event.dataTransfer?.setData('text/plain', String(command.id))
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
+  window.addEventListener('pointermove', movePointerDrag)
+  window.addEventListener('pointerup', endPointerDrag)
+  window.addEventListener('pointercancel', cancelPointerDrag)
+}
+
+function movePointerDrag(event: PointerEvent) {
+  const start = pointerStart.value
+  if (!start || event.pointerId !== start.pointerId) return
+
+  const distance = Math.hypot(event.clientX - start.x, event.clientY - start.y)
+  if (!pointerDragging.value && distance < 4) return
+
+  event.preventDefault()
+  didDrag.value = true
+  pointerDragging.value = true
+  const target = commandAtPoint(event.clientX, event.clientY)
+  if (target && target.id !== start.commandId) {
+    dragOverCommandId.value = target.id
   }
 }
 
-function overCommand(event: DragEvent, command: QuickCommand) {
-  if (draggingCommandId.value == null || draggingCommandId.value === command.id) return
-  event.preventDefault()
-  dragOverCommandId.value = command.id
+async function endPointerDrag(event: PointerEvent) {
+  const start = pointerStart.value
+  if (!start || event.pointerId !== start.pointerId) return
+
+  const moved = pointerDragging.value
+  const target = commandAtPoint(event.clientX, event.clientY)
+  const targetId = target?.id ?? dragOverCommandId.value
+  clearPointerDrag()
+  if (!moved || targetId == null || targetId === start.commandId) {
+    window.setTimeout(() => {
+      didDrag.value = false
+    }, 0)
+    return
+  }
+
+  await moveCommand(start.commandId, targetId)
 }
 
-async function dropCommand(event: DragEvent, target: QuickCommand) {
-  event.preventDefault()
-  const sourceId = draggingCommandId.value
-  resetDrag()
-  if (sourceId == null || sourceId === target.id) return
+function cancelPointerDrag() {
+  clearPointerDrag()
+  window.setTimeout(() => {
+    didDrag.value = false
+  }, 0)
+}
 
-  didDrag.value = true
+function clearPointerDrag() {
+  pointerStart.value = null
+  pointerDragging.value = false
+  draggingCommandId.value = null
+  dragOverCommandId.value = null
+  window.removeEventListener('pointermove', movePointerDrag)
+  window.removeEventListener('pointerup', endPointerDrag)
+  window.removeEventListener('pointercancel', cancelPointerDrag)
+}
+
+async function moveCommand(sourceId: number, targetId: number) {
+  if (sourceId === targetId) return
   const next = visibleCommands.value.slice()
   const sourceIndex = next.findIndex(command => command.id === sourceId)
-  const targetIndex = next.findIndex(command => command.id === target.id)
-  if (sourceIndex < 0 || targetIndex < 0) return
+  const targetIndex = next.findIndex(command => command.id === targetId)
+  if (sourceIndex < 0 || targetIndex < 0) {
+    window.setTimeout(() => {
+      didDrag.value = false
+    }, 0)
+    return
+  }
 
   const [moved] = next.splice(sourceIndex, 1)
   next.splice(targetIndex, 0, moved)
@@ -77,17 +133,14 @@ async function dropCommand(event: DragEvent, target: QuickCommand) {
   }, 0)
 }
 
-function resetDrag() {
-  draggingCommandId.value = null
-  dragOverCommandId.value = null
-}
+onUnmounted(clearPointerDrag)
 </script>
 
 <template>
   <div class="cmd-bar" v-if="visibleCommands.length > 0">
     <div class="bar-header">
       <span class="bar-label wf-label">Quick commands</span>
-      <span v-if="activeSession" class="bar-context wf-label">· {{ activeSession.connectionName }}</span>
+      <span v-if="activeSession" class="bar-context wf-label">· {{ sessionDisplayName(activeSession) }}</span>
       <div class="bar-spacer" />
       <button class="gear-btn" title="Manage commands">⚙</button>
     </div>
@@ -97,6 +150,7 @@ function resetDrag() {
         :key="cmd.id"
         :class="[
           'pill',
+          'command-pill',
           {
             primary: cmd.sortOrder === 0,
             dragging: draggingCommandId === cmd.id,
@@ -104,12 +158,9 @@ function resetDrag() {
           },
         ]"
         :title="cmd.command"
-        draggable="true"
+        :data-command-id="cmd.id"
         :disabled="!activeSession?.connected"
-        @dragstart="startDrag($event, cmd)"
-        @dragover="overCommand($event, cmd)"
-        @drop="dropCommand($event, cmd)"
-        @dragend="resetDrag"
+        @pointerdown="startPointerDrag($event, cmd)"
         @click="runCommand(cmd.command)"
       >
         {{ cmd.label }}
@@ -184,11 +235,12 @@ function resetDrag() {
   white-space: nowrap;
   transition: background 0.1s, border-color 0.1s;
 }
-.pill[draggable="true"] {
+.command-pill {
   cursor: grab;
 }
-.pill.dragging {
+.command-pill.dragging {
   opacity: 0.48;
+  cursor: grabbing;
 }
 .pill.drag-over {
   background: var(--highlight);

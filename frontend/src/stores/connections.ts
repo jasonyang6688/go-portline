@@ -43,7 +43,21 @@ async function loadConnections() {
     loaded = true
   } catch (e) {
     console.warn('fetchConnections failed (dev mode?):', e)
-    connections.value = []
+    connections.value = [
+      {
+        id: localId--,
+        name: 'Local Terminal',
+        host: 'localhost',
+        port: 0,
+        user: 'local',
+        password: '',
+        keyPath: '',
+        kind: 'local',
+        wslDistro: '',
+        env: 'dev',
+        groupName: 'Local',
+      },
+    ]
     detectedHosts.value = [
       {
         id: 0,

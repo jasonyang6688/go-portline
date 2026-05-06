@@ -37,6 +37,9 @@ function chooseDelete() {
 }
 
 function connectionAddress() {
+  if (props.connection.kind === 'local') {
+    return 'local shell'
+  }
   if (props.connection.kind === 'wsl' || props.connection.wslDistro) {
     return `${props.connection.user}@${props.connection.wslDistro || props.connection.host}`
   }

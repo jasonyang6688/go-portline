@@ -63,6 +63,8 @@ export function SSHStart(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function SSHWrite(arg1:string,arg2:string):Promise<void>;
 
+export function SaveClipboardImage(arg1:string,arg2:string):Promise<string>;
+
 export function SaveConnection(arg1:store.Connection):Promise<number>;
 
 export function SaveQuickCommand(arg1:store.QuickCommand):Promise<void>;

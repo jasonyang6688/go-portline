@@ -49,6 +49,7 @@ const filteredGroups = computed(() => {
 const groupOptions = computed(() =>
   Object.keys(groupedConnections.value).sort((a, b) => a.localeCompare(b))
 )
+const isLocalDraft = computed(() => editingKind.value === 'local')
 
 function resetDraft() {
   draft.value = {
@@ -96,12 +97,12 @@ function closeCreate() {
 }
 
 async function saveDraft() {
-  const host = draft.value.host.trim()
-  const user = draft.value.user.trim()
+  const host = isLocalDraft.value ? 'localhost' : draft.value.host.trim()
+  const user = isLocalDraft.value ? (draft.value.user.trim() || 'local') : draft.value.user.trim()
   const name = draft.value.name.trim() || host
-  const port = Number(draft.value.port) || 22
+  const port = isLocalDraft.value ? 0 : Number(draft.value.port) || 22
 
-  if (!host || !user) {
+  if (!isLocalDraft.value && (!host || !user)) {
     error.value = 'Host and user are required.'
     return
   }
@@ -170,6 +171,9 @@ async function selectKeyPath() {
 }
 
 function connectionAddress(c: Connection) {
+  if (c.kind === 'local') {
+    return 'local shell'
+  }
   if (c.kind === 'wsl' || c.wslDistro) {
     return `${c.user}@${c.wslDistro || c.host}`
   }
@@ -194,16 +198,16 @@ function connectionAddress(c: Connection) {
       </label>
       <label>
         <span>Host</span>
-        <input v-model="draft.host" placeholder="10.0.1.24" required />
+        <input v-model="draft.host" :disabled="isLocalDraft" placeholder="10.0.1.24" :required="!isLocalDraft" />
       </label>
       <div class="inline-fields">
         <label>
           <span>User</span>
-          <input v-model="draft.user" placeholder="deploy" required />
+          <input v-model="draft.user" :disabled="isLocalDraft" placeholder="deploy" :required="!isLocalDraft" />
         </label>
         <label>
           <span>Port</span>
-          <input v-model.number="draft.port" type="number" min="1" max="65535" />
+          <input v-model.number="draft.port" :disabled="isLocalDraft" type="number" min="1" max="65535" />
         </label>
       </div>
       <div class="inline-fields">
@@ -227,11 +231,11 @@ function connectionAddress(c: Connection) {
           </datalist>
         </label>
       </div>
-      <label>
+      <label v-if="!isLocalDraft">
         <span>Password</span>
         <input v-model="draft.password" type="password" placeholder="optional" />
       </label>
-      <label>
+      <label v-if="!isLocalDraft">
         <span>Key path</span>
         <div class="key-picker-row">
           <input v-model="draft.keyPath" placeholder="~/.ssh/id_ed25519" />
@@ -268,7 +272,7 @@ function connectionAddress(c: Connection) {
         <span class="detected-meta">{{ connectionAddress(host) }}</span>
         <span class="detected-action">{{ addingDetected === host.name ? 'Adding...' : '+ Add' }}</span>
       </button>
-      <div class="detected-note">WSL opens through wsl.exe; SSH hosts still use port 22.</div>
+      <div class="detected-note">Local terminals run inside TermFlow; WSL opens through wsl.exe; SSH hosts still use port 22.</div>
     </div>
     <div class="search-wrap">
       <span class="search-icon">⌕</span>

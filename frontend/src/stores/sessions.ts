@@ -7,6 +7,7 @@ export interface Session {
   id: string
   connectionId: number
   connectionName: string
+  label: string
   env: string
   connected: boolean
 }
@@ -34,6 +35,7 @@ export async function openSession(conn: Connection): Promise<Session> {
     id: sessionId,
     connectionId: conn.id,
     connectionName: conn.name,
+    label: conn.name,
     env: conn.env,
     connected: true,
   }
@@ -62,6 +64,20 @@ export function markSessionClosed(id: string) {
   sessions.value = sessions.value.map(session =>
     session.id === id ? { ...session, connected: false } : session
   )
+}
+
+export function sessionDisplayName(session: Session) {
+  return session.label.trim() || session.connectionName
+}
+
+export function renameSession(id: string, label: string) {
+  sessions.value = sessions.value.map(session =>
+    session.id === id ? { ...session, label: normalizeSessionLabel(label, session.connectionName) } : session
+  )
+}
+
+function normalizeSessionLabel(label: string, fallback: string) {
+  return label.trim().replace(/\s+/g, ' ') || fallback
 }
 
 function isWailsBridgeMissing(e: unknown) {

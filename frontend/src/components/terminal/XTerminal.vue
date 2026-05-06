@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { EventsOff, EventsOn } from '../../../wailsjs/runtime/runtime'
+import { ClipboardGetText, EventsOff, EventsOn } from '../../../wailsjs/runtime/runtime'
 import { registerTerminalWriter } from '../../stores/terminalBridge'
 import { markSessionClosed } from '../../stores/sessions'
 import { settings } from '../../stores/uiSettings'
@@ -173,21 +173,11 @@ function handleTerminalKey(event: KeyboardEvent) {
     return true
   }
 
-  if (ctrlOrMeta && key === 'v') {
-    pasteClipboardFromKeyboard(event)
-    return false
-  }
-
   if (ctrlOrMeta && event.shiftKey && key === 'c') {
     const selectedText = term.getSelection()
     if (selectedText) {
       copyText(selectedText)
     }
-    return false
-  }
-
-  if (ctrlOrMeta && event.shiftKey && key === 'v') {
-    pasteClipboardFromKeyboard(event)
     return false
   }
 
@@ -204,31 +194,97 @@ async function copyText(text: string) {
 
 async function pasteClipboard() {
   try {
-    const text = await navigator.clipboard.readText()
-    if (text) {
-      if (isPreview) {
-        term.write(text)
-      } else {
-        sendRemoteInput(text)
-      }
-    }
+    pasteText(await ClipboardGetText())
   } catch (e) {
     console.warn('paste failed:', e)
   }
 }
 
-async function pasteClipboardFromKeyboard(event: KeyboardEvent) {
+function pasteText(text: string) {
+  if (!text) return
+  if (isPreview) {
+    term.write(text)
+  } else {
+    sendRemoteInput(text)
+  }
+}
+
+async function handlePaste(event: ClipboardEvent) {
   event.preventDefault()
   event.stopPropagation()
-  if (event.repeat || pasteInFlight) return
+  if (pasteInFlight) return
   pasteInFlight = true
   try {
-    await pasteClipboard()
+    const text = event.clipboardData?.getData('text/plain') ?? ''
+    if (text) {
+      pasteText(text)
+      return
+    }
+
+    const image = clipboardImageFile(event)
+    if (image) {
+      await pasteClipboardImage(image)
+    }
   } finally {
     window.setTimeout(() => {
       pasteInFlight = false
     }, 0)
   }
+}
+
+function clipboardImageFile(event: ClipboardEvent) {
+  const file = Array.from(event.clipboardData?.files ?? []).find(file => file.type.startsWith('image/'))
+  if (file) return file
+
+  const item = Array.from(event.clipboardData?.items ?? []).find(item => item.type.startsWith('image/'))
+  return item?.getAsFile() ?? null
+}
+
+async function pasteClipboardImage(file: File) {
+  try {
+    const saveImage = await clipboardImageSaver()
+    const path = await saveImage(file.name || imageFileName(file), await blobToBase64(file))
+    pasteText(`${shellQuote(path)} `)
+  } catch (e) {
+    console.warn('image paste failed:', e)
+    term.writeln('')
+    term.writeln(`\x1b[31m[image paste failed: ${formatError(e)}]\x1b[0m`)
+  }
+}
+
+async function clipboardImageSaver() {
+  const appApi = await import('../../../wailsjs/go/main/App') as typeof import('../../../wailsjs/go/main/App') & {
+    SaveClipboardImage?: (name: string, encoded: string) => Promise<string>
+  }
+  const saveImage = appApi.SaveClipboardImage ?? (window as Window & {
+    go?: { main?: { App?: { SaveClipboardImage?: (name: string, encoded: string) => Promise<string> } } }
+  }).go?.main?.App?.SaveClipboardImage
+  if (!saveImage) {
+    throw new Error('SaveClipboardImage API is not loaded. Restart wails dev to refresh Wails bindings.')
+  }
+  return saveImage
+}
+
+function imageFileName(file: File) {
+  const ext = file.type === 'image/jpeg'
+    ? 'jpg'
+    : file.type.startsWith('image/')
+      ? file.type.slice('image/'.length).replace(/[^a-z0-9]/gi, '') || 'png'
+      : 'png'
+  return `clipboard-image.${ext}`
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 async function copySelectionFromMenu() {
@@ -246,10 +302,16 @@ async function pasteFromMenu() {
 }
 
 function openContextMenu(event: MouseEvent) {
+  const rect = container.value?.getBoundingClientRect()
+  if (!rect) return
+  const menuWidth = 128
+  const menuHeight = 70
+  const margin = 4
+
   contextMenu.value = {
     open: true,
-    x: event.offsetX,
-    y: event.offsetY,
+    x: Math.max(margin, Math.min(event.clientX - rect.left, rect.width - menuWidth - margin)),
+    y: Math.max(margin, Math.min(event.clientY - rect.top, rect.height - menuHeight - margin)),
   }
 }
 
@@ -283,6 +345,7 @@ function focusTerminal() {
     ref="container"
     class="xterm-wrap"
     @mousedown="focusTerminal"
+    @paste.capture.prevent.stop="handlePaste"
     @contextmenu.prevent.stop="openContextMenu"
   >
     <div

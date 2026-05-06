@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	localterm "TermFlow/internal/local"
 	"TermFlow/internal/ssh"
 	"TermFlow/internal/store"
 	"TermFlow/internal/termexec"
@@ -58,6 +59,7 @@ func (a *App) startup(ctx context.Context) {
 	a.db = db
 
 	_ = a.db.DeleteDemoData()
+	a.ensureSingleLocalConnection(osUser())
 	a.ensureSingleLocalWSL()
 }
 
@@ -101,6 +103,53 @@ func (a *App) ensureSingleLocalWSL() {
 	if err == nil {
 		_ = a.db.AttachOrphanQuickCommands(id)
 	}
+}
+
+func (a *App) ensureSingleLocalConnection(user string) {
+	conns, err := a.db.ListConnections()
+	if err != nil {
+		return
+	}
+	localConn := defaultLocalConnection(user)
+	for _, c := range conns {
+		if !isLocalConnection(c) {
+			continue
+		}
+		localConn.ID = c.ID
+		_, _ = a.db.SaveConnection(localConn)
+		return
+	}
+	_, _ = a.db.SaveConnection(localConn)
+}
+
+func defaultLocalConnection(user string) store.Connection {
+	user = strings.TrimSpace(user)
+	if user == "" {
+		user = "local"
+	}
+	return store.Connection{
+		Name:      "Local Terminal",
+		Host:      "localhost",
+		Port:      0,
+		User:      user,
+		Kind:      "local",
+		Env:       "dev",
+		GroupName: "Local",
+	}
+}
+
+func isLocalConnection(c store.Connection) bool {
+	return c.Kind == "local"
+}
+
+func osUser() string {
+	if user := strings.TrimSpace(os.Getenv("USER")); user != "" {
+		return user
+	}
+	if user := strings.TrimSpace(os.Getenv("USERNAME")); user != "" {
+		return user
+	}
+	return "local"
 }
 
 // ── Connection CRUD ──────────────────────────────────────────────
@@ -230,7 +279,9 @@ func (a *App) SSHConnect(connID int64) (ConnectResult, error) {
 	}
 	id := a.sshMgr.NewSessionID()
 	var sess ssh.ManagedSession
-	if isWSLConnection(c) {
+	if isLocalConnection(c) {
+		sess, err = localterm.Connect(id)
+	} else if isWSLConnection(c) {
 		sess, err = wsl.Connect(id, connectionWSLDistro(c))
 	} else {
 		sess, err = ssh.Connect(id, ssh.ConnectParams{
@@ -264,6 +315,38 @@ func connectionWSLDistro(c store.Connection) string {
 		}
 	}
 	return c.Host
+}
+
+func sanitizeClipboardImageName(name string) string {
+	name = strings.TrimSpace(filepath.Base(name))
+	if name == "" || name == "." {
+		name = "clipboard-image.png"
+	}
+
+	var builder strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '.', r == '-', r == '_':
+			builder.WriteRune(r)
+		default:
+			builder.WriteRune('-')
+		}
+	}
+
+	clean := strings.Trim(builder.String(), ".-")
+	if clean == "" {
+		return "clipboard-image.png"
+	}
+	if filepath.Ext(clean) == "" {
+		return clean + ".png"
+	}
+	return clean
 }
 
 func (a *App) SSHStart(sessionID string, cols int, rows int) error {
@@ -971,6 +1054,28 @@ func (a *App) SaveQuickCommand(q store.QuickCommand) error {
 
 func (a *App) DeleteQuickCommand(id int64) error {
 	return a.db.DeleteQuickCommand(id)
+}
+
+func (a *App) SaveClipboardImage(name string, encoded string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("clipboard image is empty")
+	}
+
+	name = sanitizeClipboardImageName(name)
+	dir := filepath.Join(os.Getenv("HOME"), ".termflow", "clipboard")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(dir, fmt.Sprintf("%s-%s", time.Now().Format("20060102-150405"), name))
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func parseRemoteList(out []byte) RemoteListResult {

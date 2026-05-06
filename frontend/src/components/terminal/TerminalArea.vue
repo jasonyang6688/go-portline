@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { sessions, activeSessionId, closeSession } from '../../stores/sessions'
+import { sessions, activeSessionId, closeSession, renameSession, sessionDisplayName } from '../../stores/sessions'
 import TerminalTab from './TerminalTab.vue'
 import XTerminal from './XTerminal.vue'
 import QuickCommandBar from '../commands/QuickCommandBar.vue'
@@ -82,6 +82,7 @@ function resetQuickPanelHeight() {
         :active="s.id === activeSessionId"
         @activate="activeSessionId = s.id"
         @close="closeSession(s.id)"
+        @rename="renameSession(s.id, $event)"
       />
       <div v-if="sessions.length === 0" class="tab-hint wf-label">
         Double-click a connection to open a session
@@ -119,7 +120,7 @@ function resetQuickPanelHeight() {
         v-if="monitorMode"
         mode="dashboard"
         :session-id="activeSession?.id ?? null"
-        :session-name="activeSession?.connectionName"
+        :session-name="activeSession ? sessionDisplayName(activeSession) : undefined"
       />
       <!-- Terminal panels (mounted, shown/hidden) -->
       <div
@@ -148,14 +149,14 @@ function resetQuickPanelHeight() {
       <SftpDrawer
         v-if="sftpOpen"
         :session-id="activeSession?.id ?? null"
-        :session-name="activeSession?.connectionName"
+        :session-name="activeSession ? sessionDisplayName(activeSession) : undefined"
         :path-request="filePathRequest"
         @close="sftpOpen = false"
       />
       <MonitorPanel
         v-if="monitorOpen && !monitorMode"
         :session-id="activeSession?.id ?? null"
-        :session-name="activeSession?.connectionName"
+        :session-name="activeSession ? sessionDisplayName(activeSession) : undefined"
         @close="monitorOpen = false"
       />
     </div>
@@ -175,7 +176,7 @@ function resetQuickPanelHeight() {
         <span />
       </div>
       <form v-if="activeSession" class="command-entry" @submit.prevent="submitCommandDraft">
-        <span class="entry-prefix">{{ activeSession.connectionName }}</span>
+        <span class="entry-prefix">{{ sessionDisplayName(activeSession) }}</span>
         <input
           v-model="commandDraft"
           :disabled="!activeSession.connected"
@@ -194,7 +195,7 @@ function resetQuickPanelHeight() {
         <span class="env-dot" :class="`env-${activeSession.env}`" />
         <span class="status-text">{{ activeSession.connected ? 'connected' : 'disconnected' }}</span>
         <span class="status-sep">/</span>
-        <span class="status-text">{{ activeSession.connectionName }}</span>
+        <span class="status-text">{{ sessionDisplayName(activeSession) }}</span>
         <div class="status-spacer" />
         <span class="status-text">heartbeat 60s</span>
         <span class="status-sep">/</span>
