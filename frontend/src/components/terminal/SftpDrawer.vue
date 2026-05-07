@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 import { registerFileDropTarget } from '../../stores/fileDrops'
+import CodeEditor from './CodeEditor.vue'
 
 const props = defineProps<{
   sessionId: string | null
@@ -144,7 +145,7 @@ interface BrowserFileSystemDirectoryEntry extends BrowserFileSystemEntry {
   }
 }
 
-interface BrowserDataTransferItem extends DataTransferItem {
+interface BrowserDataTransferItem {
   webkitGetAsEntry?: () => BrowserFileSystemEntry | null
 }
 
@@ -692,22 +693,24 @@ function blobToBase64(blob: Blob): Promise<string> {
       <button class="danger" @click="menuDelete">Delete</button>
     </div>
 
-    <div v-if="editOpen" class="editor-backdrop">
-      <section class="editor-panel">
-        <div class="editor-head">
-          <div>
-            <strong>Edit</strong>
-            <span>{{ editFile?.path }}</span>
+    <Teleport to="body">
+      <div v-if="editOpen" class="editor-backdrop">
+        <section class="editor-panel">
+          <div class="editor-head">
+            <div>
+              <strong>Edit</strong>
+              <span>{{ editFile?.path }}</span>
+            </div>
+            <button class="icon-btn" title="Close editor" @click="editOpen = false">x</button>
           </div>
-          <button class="icon-btn" title="Close editor" @click="editOpen = false">x</button>
-        </div>
-        <textarea v-model="editContent" spellcheck="false" />
-        <div class="editor-actions">
-          <button @click="editOpen = false">Cancel</button>
-          <button :disabled="editSaving" @click="saveEdit">{{ editSaving ? 'Saving...' : 'Save' }}</button>
-        </div>
-      </section>
-    </div>
+          <CodeEditor v-model="editContent" :file-path="editFile?.path" @save="saveEdit" />
+          <div class="editor-actions">
+            <button @click="editOpen = false">Cancel</button>
+            <button :disabled="editSaving" @click="saveEdit">{{ editSaving ? 'Saving...' : 'Save' }}</button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </aside>
 </template>
 
@@ -1107,9 +1110,9 @@ function blobToBase64(blob: Blob): Promise<string> {
   cursor: not-allowed;
 }
 .editor-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 80;
   display: flex;
   align-items: stretch;
   justify-content: stretch;
@@ -1144,26 +1147,13 @@ function blobToBase64(blob: Blob): Promise<string> {
   font-size: 17px;
 }
 .editor-head span {
-  max-width: 330px;
+  max-width: min(72vw, 960px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--pencil);
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-}
-.editor-panel textarea {
-  flex: 1;
-  min-height: 260px;
-  resize: none;
-  border: none;
-  outline: none;
-  padding: 10px;
-  background: #1c1b19;
-  color: #faf8f4;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  line-height: 1.55;
 }
 .editor-actions {
   display: flex;

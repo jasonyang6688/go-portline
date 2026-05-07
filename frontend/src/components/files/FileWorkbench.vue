@@ -57,7 +57,7 @@ interface BrowserFileSystemDirectoryEntry extends BrowserFileSystemEntry {
   }
 }
 
-interface BrowserDataTransferItem extends DataTransferItem {
+interface BrowserDataTransferItem {
   webkitGetAsEntry?: () => BrowserFileSystemEntry | null
 }
 
