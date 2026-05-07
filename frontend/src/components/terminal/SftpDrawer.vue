@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 import { registerFileDropTarget } from '../../stores/fileDrops'
 import CodeEditor from './CodeEditor.vue'
@@ -27,12 +27,21 @@ interface SessionFileState {
   selectedPath: string
 }
 
+interface EditorTab {
+  id: string
+  sessionId: string
+  name: string
+  path: string
+  content: string
+  dirty: boolean
+  saving: boolean
+}
+
 const states = ref<Record<string, SessionFileState>>({})
 const transfers = ref<TransferProgress[]>([])
 const editOpen = ref(false)
-const editFile = ref<RemoteFile | null>(null)
-const editContent = ref('')
-const editSaving = ref(false)
+const editTabs = ref<EditorTab[]>([])
+const activeEditId = ref('')
 const menu = ref<{ open: boolean; x: number; y: number; file: RemoteFile | null }>({
   open: false,
   x: 0,
@@ -49,6 +58,19 @@ let removeTransferListener: (() => void) | undefined
 let removeFileDropTarget: (() => void) | undefined
 let startX = 0
 let startWidth = 0
+
+const activeEditor = computed(() => editTabs.value.find(tab => tab.id === activeEditId.value) ?? null)
+const activeEditContent = computed({
+  get() {
+    return activeEditor.value?.content ?? ''
+  },
+  set(value: string) {
+    const tab = activeEditor.value
+    if (!tab || tab.content === value) return
+    tab.content = value
+    tab.dirty = true
+  },
+})
 
 function loadDrawerWidth() {
   const saved = Number(window.localStorage?.getItem('termflow.files.width') || 0)
@@ -353,12 +375,57 @@ async function editSelected() {
     if (typeof RemoteReadTextFile !== 'function') {
       throw new Error('Edit API is not loaded. Restart wails dev to refresh Wails bindings.')
     }
-    editContent.value = await RemoteReadTextFile(props.sessionId, file.path)
-    editFile.value = file
+    const id = editorTabId(props.sessionId, file.path)
+    const existing = editTabs.value.find(tab => tab.id === id)
+    if (existing) {
+      activeEditId.value = existing.id
+      editOpen.value = true
+      return
+    }
+    const content = await RemoteReadTextFile(props.sessionId, file.path)
+    editTabs.value.push({
+      id,
+      sessionId: props.sessionId,
+      name: file.name,
+      path: file.path,
+      content,
+      dirty: false,
+      saving: false,
+    })
+    activeEditId.value = id
     editOpen.value = true
   } catch (e) {
     error.value = formatError(e)
   }
+}
+
+function editorTabId(sessionId: string, path: string) {
+  return `${sessionId}:${path}`
+}
+
+function activateEditorTab(id: string) {
+  activeEditId.value = id
+  editOpen.value = true
+}
+
+function closeEditorTab(id: string) {
+  const index = editTabs.value.findIndex(tab => tab.id === id)
+  if (index < 0) return
+  const tab = editTabs.value[index]
+  if (tab.dirty && !window.confirm(`Close ${tab.name} without saving?`)) return
+
+  editTabs.value.splice(index, 1)
+  if (activeEditId.value === id) {
+    const next = editTabs.value[Math.min(index, editTabs.value.length - 1)]
+    activeEditId.value = next?.id ?? ''
+  }
+  if (editTabs.value.length === 0) {
+    editOpen.value = false
+  }
+}
+
+function closeEditorWindow() {
+  editOpen.value = false
 }
 
 function openContextMenu(event: MouseEvent, file: RemoteFile) {
@@ -422,19 +489,27 @@ async function menuDelete() {
   }
 }
 
-async function saveEdit() {
-  if (!props.sessionId || !editFile.value) return
-  editSaving.value = true
+async function saveEdit(tab = activeEditor.value) {
+  if (!tab) return
+  tab.saving = true
   error.value = ''
   try {
     const { RemoteWriteTextFile } = await import('../../../wailsjs/go/main/App')
-    await RemoteWriteTextFile(props.sessionId, editFile.value.path, editContent.value)
-    editOpen.value = false
-    await load()
+    await RemoteWriteTextFile(tab.sessionId, tab.path, tab.content)
+    tab.dirty = false
+    if (tab.sessionId === props.sessionId) {
+      await load()
+    }
   } catch (e) {
     error.value = formatError(e)
   } finally {
-    editSaving.value = false
+    tab.saving = false
+  }
+}
+
+async function saveAllEdits() {
+  for (const tab of editTabs.value.filter(tab => tab.dirty)) {
+    await saveEdit(tab)
   }
 }
 
@@ -698,15 +773,41 @@ function blobToBase64(blob: Blob): Promise<string> {
         <section class="editor-panel">
           <div class="editor-head">
             <div>
-              <strong>Edit</strong>
-              <span>{{ editFile?.path }}</span>
+              <strong>Remote Editor</strong>
+              <span>{{ activeEditor?.path }}</span>
             </div>
-            <button class="icon-btn" title="Close editor" @click="editOpen = false">x</button>
+            <button class="icon-btn" title="Close editor" @click="closeEditorWindow">x</button>
           </div>
-          <CodeEditor v-model="editContent" :file-path="editFile?.path" @save="saveEdit" />
+          <div class="editor-tabs">
+            <button
+              v-for="tab in editTabs"
+              :key="tab.id"
+              type="button"
+              :class="['editor-tab', { active: tab.id === activeEditId, dirty: tab.dirty }]"
+              :title="tab.path"
+              @click="activateEditorTab(tab.id)"
+            >
+              <span>{{ tab.name }}</span>
+              <i v-if="tab.dirty" aria-hidden="true" />
+              <em
+                role="button"
+                title="Close file"
+                @click.stop="closeEditorTab(tab.id)"
+              >x</em>
+            </button>
+          </div>
+          <CodeEditor
+            v-if="activeEditor"
+            v-model="activeEditContent"
+            :file-path="activeEditor.path"
+            @save="saveEdit()"
+          />
           <div class="editor-actions">
-            <button @click="editOpen = false">Cancel</button>
-            <button :disabled="editSaving" @click="saveEdit">{{ editSaving ? 'Saving...' : 'Save' }}</button>
+            <button @click="closeEditorWindow">Hide</button>
+            <button :disabled="!editTabs.some(tab => tab.dirty)" @click="saveAllEdits">Save All</button>
+            <button :disabled="!activeEditor || activeEditor.saving" @click="saveEdit()">
+              {{ activeEditor?.saving ? 'Saving...' : 'Save' }}
+            </button>
           </div>
         </section>
       </div>
@@ -1154,6 +1255,65 @@ function blobToBase64(blob: Blob): Promise<string> {
   color: var(--pencil);
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
+}
+.editor-tabs {
+  min-height: 36px;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 5px 8px 0;
+  border-bottom: 1.2px solid var(--faint);
+  background: var(--paper-tabbar);
+  overflow-x: auto;
+}
+.editor-tab {
+  max-width: 220px;
+  min-width: 96px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px 0 10px;
+  border: 1.1px solid var(--faint);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: rgba(250, 248, 244, 0.58);
+  color: var(--pencil);
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+.editor-tab.active {
+  background: #1c1b19;
+  border-color: var(--ink);
+  color: #faf8f4;
+}
+.editor-tab span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-tab i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--env-dev);
+}
+.editor-tab em {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: inherit;
+  font-style: normal;
+  line-height: 1;
+}
+.editor-tab em:hover {
+  background: rgba(250, 248, 244, 0.14);
 }
 .editor-actions {
   display: flex;
