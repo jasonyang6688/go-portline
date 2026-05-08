@@ -131,6 +131,8 @@ async function attachRemotePty() {
     const { SSHStart } = await import('../../../wailsjs/go/main/App')
     await SSHStart(props.sessionId, term.cols, term.rows)
   } catch (e) {
+    remoteClosed = true
+    markSessionClosed(props.sessionId)
     term.writeln('')
     term.writeln(`\x1b[31m[failed to start SSH shell: ${formatError(e)}]\x1b[0m`)
   }

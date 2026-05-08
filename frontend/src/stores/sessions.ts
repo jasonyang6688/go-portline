@@ -60,6 +60,48 @@ export async function closeSession(id: string) {
   }
 }
 
+export async function reconnectSession(id: string): Promise<Session> {
+  const current = sessions.value.find(session => session.id === id)
+  if (!current) {
+    throw new Error(`session ${id} not found`)
+  }
+
+  let nextSessionId = ''
+
+  try {
+    if (!id.startsWith('preview-')) {
+      const { SSHDisconnect } = await import('../../wailsjs/go/main/App')
+      await SSHDisconnect(id)
+    }
+  } catch (e) {
+    console.warn('disconnect before reconnect failed:', e)
+  }
+
+  try {
+    const { SSHConnect } = await import('../../wailsjs/go/main/App')
+    const result = await SSHConnect(current.connectionId)
+    nextSessionId = result.sessionId
+  } catch (e) {
+    if (!isWailsBridgeMissing(e)) {
+      throw e
+    }
+    console.warn('SSHConnect unavailable outside Wails runtime; reopening preview session:', e)
+    nextSessionId = `preview-${Math.abs(previewSessionId--)}`
+  }
+
+  const reconnected: Session = {
+    ...current,
+    id: nextSessionId,
+    connected: true,
+  }
+
+  sessions.value = sessions.value.map(session =>
+    session.id === id ? reconnected : session
+  )
+  activeSessionId.value = reconnected.id
+  return reconnected
+}
+
 export function markSessionClosed(id: string) {
   sessions.value = sessions.value.map(session =>
     session.id === id ? { ...session, connected: false } : session

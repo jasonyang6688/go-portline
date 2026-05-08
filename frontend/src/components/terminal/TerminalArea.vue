@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { sessions, activeSessionId, closeSession, renameSession, sessionDisplayName } from '../../stores/sessions'
+import { sessions, activeSessionId, closeSession, reconnectSession, renameSession, sessionDisplayName } from '../../stores/sessions'
 import TerminalTab from './TerminalTab.vue'
 import XTerminal from './XTerminal.vue'
 import QuickCommandBar from '../commands/QuickCommandBar.vue'
@@ -19,6 +19,8 @@ const activeSession = computed(() =>
 const splitMode = ref(false)
 const commandDraft = ref('')
 const quickPanelHeight = ref(116)
+const reconnectingSessionId = ref<string | null>(null)
+const reconnectError = ref('')
 const monitorMode = computed(() => props.activePanel === 'monitor')
 
 const visibleSessionIds = computed(() => {
@@ -47,6 +49,20 @@ function submitCommandDraft() {
   }
 }
 
+async function reconnectActiveSession() {
+  if (!activeSession.value || activeSession.value.connected || reconnectingSessionId.value) return
+  const sessionId = activeSession.value.id
+  reconnectingSessionId.value = sessionId
+  reconnectError.value = ''
+  try {
+    await reconnectSession(sessionId)
+  } catch (e) {
+    reconnectError.value = formatError(e)
+  } finally {
+    reconnectingSessionId.value = null
+  }
+}
+
 function startQuickPanelResize(event: PointerEvent) {
   event.preventDefault()
   const startY = event.clientY
@@ -68,6 +84,10 @@ function startQuickPanelResize(event: PointerEvent) {
 
 function resetQuickPanelHeight() {
   quickPanelHeight.value = 116
+}
+
+function formatError(e: unknown) {
+  return e instanceof Error ? e.message : String(e)
 }
 </script>
 
@@ -134,6 +154,27 @@ function resetQuickPanelHeight() {
           class="terminal-pane"
           :session-id="s.id"
         />
+        <div v-if="activeSession && !activeSession.connected" class="disconnect-overlay">
+          <div class="disconnect-panel">
+            <span class="disconnect-kicker">Connection lost</span>
+            <strong>{{ sessionDisplayName(activeSession) }}</strong>
+            <p>The terminal session is closed. Reconnect to start a fresh shell for this tab.</p>
+            <span v-if="reconnectError" class="disconnect-error">{{ reconnectError }}</span>
+            <div class="disconnect-actions">
+              <button
+                type="button"
+                class="reconnect-primary"
+                :disabled="reconnectingSessionId === activeSession.id"
+                @click="reconnectActiveSession"
+              >
+                {{ reconnectingSessionId === activeSession.id ? 'Reconnecting...' : 'Reconnect' }}
+              </button>
+              <button type="button" class="reconnect-secondary" @click="closeSession(activeSession.id)">
+                Close tab
+              </button>
+            </div>
+          </div>
+        </div>
         <div v-if="sessions.length === 0" class="empty-terminal">
           <div class="empty-inner">
             <div class="empty-icon">[]</div>
@@ -193,11 +234,22 @@ function resetQuickPanelHeight() {
     <div class="status-bar">
       <template v-if="activeSession">
         <span class="env-dot" :class="`env-${activeSession.env}`" />
-        <span class="status-text">{{ activeSession.connected ? 'connected' : 'disconnected' }}</span>
+        <span :class="['status-text', { disconnected: !activeSession.connected }]">
+          {{ activeSession.connected ? 'connected' : 'disconnected' }}
+        </span>
         <span class="status-sep">/</span>
         <span class="status-text">{{ sessionDisplayName(activeSession) }}</span>
         <div class="status-spacer" />
-        <span class="status-text">heartbeat 60s</span>
+        <button
+          v-if="!activeSession.connected"
+          type="button"
+          class="status-reconnect"
+          :disabled="reconnectingSessionId === activeSession.id"
+          @click="reconnectActiveSession"
+        >
+          {{ reconnectingSessionId === activeSession.id ? 'reconnecting' : 'reconnect' }}
+        </button>
+        <span v-else class="status-text">heartbeat 60s</span>
         <span class="status-sep">/</span>
         <span class="status-text">utf-8</span>
       </template>
@@ -282,6 +334,7 @@ function resetQuickPanelHeight() {
   display: flex;
   flex-direction: column;
   background: var(--terminal-bg);
+  position: relative;
 }
 .terminal-wrap.split {
   flex-direction: row;
@@ -309,6 +362,84 @@ function resetQuickPanelHeight() {
   font-size: 48px;
   color: rgba(250,248,244,0.08);
   margin-bottom: 8px;
+}
+.disconnect-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    linear-gradient(rgba(28, 27, 25, 0.78), rgba(28, 27, 25, 0.82)),
+    var(--terminal-bg-image, none);
+}
+.disconnect-panel {
+  width: min(420px, 100%);
+  border: 1.5px solid rgba(250, 248, 244, 0.22);
+  border-radius: 8px;
+  padding: 22px;
+  background: rgba(28, 27, 25, 0.92);
+  color: var(--terminal-fg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.disconnect-kicker {
+  color: var(--env-prod);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.disconnect-panel strong {
+  font-family: 'Caveat', cursive;
+  font-size: 28px;
+  line-height: 1.05;
+}
+.disconnect-panel p {
+  margin: 0;
+  color: rgba(250, 248, 244, 0.72);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.disconnect-error {
+  color: var(--env-prod);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.disconnect-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.disconnect-actions button {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  font-weight: 700;
+}
+.reconnect-primary {
+  border: 1.5px solid var(--highlight);
+  background: var(--highlight);
+  color: var(--ink);
+}
+.reconnect-secondary {
+  border: 1.2px solid rgba(250, 248, 244, 0.32);
+  background: transparent;
+  color: var(--terminal-fg);
+}
+.disconnect-actions button:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 .quick-panel {
   display: flex;
@@ -413,6 +544,29 @@ function resetQuickPanelHeight() {
   font-family: 'Caveat', cursive;
   font-size: 13px;
   color: var(--pencil);
+}
+.status-text.disconnected {
+  color: var(--env-prod);
+  font-weight: 700;
+}
+.status-reconnect {
+  height: 20px;
+  padding: 0 8px;
+  border: 1.2px solid var(--env-prod);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--env-prod);
+  cursor: pointer;
+  font-family: 'Caveat', cursive;
+  font-size: 13px;
+  font-weight: 700;
+}
+.status-reconnect:hover:not(:disabled) {
+  background: rgba(179, 63, 50, 0.1);
+}
+.status-reconnect:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 .status-sep {
   font-family: 'Caveat', cursive;
