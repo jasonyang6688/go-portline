@@ -30,7 +30,7 @@ func Connect(id string, distro string) (*Session, error) {
 	return &Session{ID: id, Distro: distro}, nil
 }
 
-func (s *Session) Start(cols int, rows int, onData func([]byte), onExit func(error)) error {
+func (s *Session) Start(cols int, rows int, colorScheme string, onData func([]byte), onExit func(error)) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -42,7 +42,7 @@ func (s *Session) Start(cols int, rows int, onData func([]byte), onExit func(err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := termexec.CommandContext(ctx, "wsl.exe", "-d", s.Distro, "--cd", "~", "--exec", "sh", "-lc", wslShellCommand(cols, rows))
+	cmd := termexec.CommandContext(ctx, "wsl.exe", "-d", s.Distro, "--cd", "~", "--exec", "sh", "-lc", wslShellCommand(cols, rows, colorScheme))
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -169,7 +169,7 @@ func (s *Session) RunToWriter(command string, output io.Writer, onWrite func(int
 	return []byte(stderrText.String()), nil
 }
 
-func wslShellCommand(cols int, rows int) string {
+func wslShellCommand(cols int, rows int, colorScheme string) string {
 	if cols <= 0 {
 		cols = 120
 	}
@@ -177,7 +177,15 @@ func wslShellCommand(cols int, rows int) string {
 		rows = 32
 	}
 
-	inner := fmt.Sprintf("TERM=xterm-256color; export TERM; stty rows %d cols %d 2>/dev/null; exec ${SHELL:-/bin/bash} -i", rows, cols)
+	colorFGBG := "15;0"
+	if strings.EqualFold(strings.TrimSpace(colorScheme), "light") {
+		colorFGBG = "0;15"
+		colorScheme = "light"
+	} else {
+		colorScheme = "dark"
+	}
+
+	inner := fmt.Sprintf("TERM=xterm-256color; COLORTERM=truecolor; TERM_PROGRAM=TermFlow; COLORFGBG=%s; TERMFLOW_COLOR_SCHEME=%s; export TERM COLORTERM TERM_PROGRAM COLORFGBG TERMFLOW_COLOR_SCHEME; stty rows %d cols %d 2>/dev/null; exec ${SHELL:-/bin/bash} -i", colorFGBG, colorScheme, rows, cols)
 	return fmt.Sprintf("if command -v script >/dev/null 2>&1; then exec script -qfec %q /dev/null; fi; %s", inner, inner)
 }
 
