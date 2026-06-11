@@ -1,4 +1,4 @@
-module TermFlow
+module termflow
 
 go 1.25.0
 

@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"TermFlow/internal/appsvc"
-	"TermFlow/internal/domain"
-	"TermFlow/internal/sessions"
-	"TermFlow/internal/sshclient"
-	"TermFlow/internal/storage"
+	"termflow/internal/appsvc"
+	"termflow/internal/domain"
+	"termflow/internal/sessions"
+	"termflow/internal/sshclient"
+	"termflow/internal/storage"
 )
 
 type App struct {
@@ -61,11 +61,9 @@ func defaultDBPath() (string, error) {
 		if homeErr != nil {
 			return "", homeErr
 		}
-		dir = filepath.Join(home, ".termflow")
-	} else {
-		dir = filepath.Join(dir, "TermFlow")
+		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "termflow.db"), nil
+	return filepath.Join(dir, "TermFlow", "termflow.db"), nil
 }
 
 func (a *App) ListConnections() ([]domain.Connection, error) {
