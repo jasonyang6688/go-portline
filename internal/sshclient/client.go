@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -309,7 +311,7 @@ func address(req ConnectRequest) string {
 		port = 22
 	}
 
-	return fmt.Sprintf("%s:%d", req.Host, port)
+	return net.JoinHostPort(req.Host, strconv.Itoa(port))
 }
 
 func NormalizeSize(size domain.TerminalSize) domain.TerminalSize {

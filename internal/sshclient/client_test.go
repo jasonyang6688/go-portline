@@ -28,7 +28,7 @@ func TestBuildClientConfigRejectsMissingAuth(t *testing.T) {
 }
 
 func TestBuildClientConfigRejectsMissingKnownHostsByDefault(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHomeDir(t, t.TempDir())
 
 	_, err := buildClientConfig(ConnectRequest{
 		Username: "root",
@@ -44,7 +44,7 @@ func TestBuildClientConfigRejectsMissingKnownHostsByDefault(t *testing.T) {
 }
 
 func TestBuildClientConfigAllowsExplicitInsecureOptIn(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHomeDir(t, t.TempDir())
 
 	cfg, err := buildClientConfig(ConnectRequest{
 		Username:              "root",
@@ -62,7 +62,7 @@ func TestBuildClientConfigAllowsExplicitInsecureOptIn(t *testing.T) {
 
 func TestBuildClientConfigUsesKnownHostsByDefault(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHomeDir(t, home)
 
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o755); err != nil {
@@ -120,6 +120,14 @@ func TestAuthMethods(t *testing.T) {
 				Password: "wrong-passphrase",
 			},
 			wantErrContains: "incorrect",
+		},
+		{
+			name: "unencrypted key with non-empty passphrase falls back",
+			req: ConnectRequest{
+				AuthType: domain.AuthKey,
+				KeyPath:  plainPath,
+				Password: "unused-passphrase",
+			},
 		},
 		{
 			name: "missing key path",
@@ -190,6 +198,14 @@ func TestAddress(t *testing.T) {
 			},
 			want: "example.com:2222",
 		},
+		{
+			name: "ipv6 literal",
+			req: ConnectRequest{
+				Host: "2001:db8::1",
+				Port: 2222,
+			},
+			want: "[2001:db8::1]:2222",
+		},
 	}
 
 	for _, tt := range tests {
@@ -243,6 +259,12 @@ func (r *chunkReader) Read(dst []byte) (int, error) {
 	r.index++
 	copy(dst, chunk)
 	return len(chunk), nil
+}
+
+func setTestHomeDir(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 }
 
 func writeTestPrivateKeys(t *testing.T) (string, string, string) {
