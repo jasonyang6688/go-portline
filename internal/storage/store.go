@@ -84,28 +84,41 @@ func (s *Store) SaveConnection(input domain.SaveConnectionInput) (domain.Connect
 
 	now := time.Now().UTC()
 	id := strings.TrimSpace(input.ID)
-	if id == "" {
+	isCreate := id == ""
+	if isCreate {
 		generatedID, err := newID()
 		if err != nil {
 			return domain.Connection{}, err
 		}
 		id = generatedID
 	}
-	tags, err := json.Marshal(input.Tags)
+	tagsValue := input.Tags
+	if tagsValue == nil {
+		tagsValue = []string{}
+	}
+	tags, err := json.Marshal(tagsValue)
 	if err != nil {
 		return domain.Connection{}, err
 	}
 
-	if input.ID == "" {
+	if isCreate {
 		_, err = s.db.Exec(
 			`INSERT INTO connections (id,name,host,port,username,auth_type,key_path,group_name,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			id, input.Name, input.Host, normalizedPort(input.Port), input.Username, normalizedAuth(input.AuthType), input.KeyPath, input.Group, string(tags), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 		)
 	} else {
-		_, err = s.db.Exec(
+		var res sql.Result
+		res, err = s.db.Exec(
 			`UPDATE connections SET name=?,host=?,port=?,username=?,auth_type=?,key_path=?,group_name=?,tags_json=?,updated_at=? WHERE id=?`,
 			input.Name, input.Host, normalizedPort(input.Port), input.Username, normalizedAuth(input.AuthType), input.KeyPath, input.Group, string(tags), now.Format(time.RFC3339Nano), id,
 		)
+		if err == nil {
+			var affected int64
+			affected, err = res.RowsAffected()
+			if err == nil && affected == 0 {
+				err = sql.ErrNoRows
+			}
+		}
 	}
 	if err != nil {
 		return domain.Connection{}, err
