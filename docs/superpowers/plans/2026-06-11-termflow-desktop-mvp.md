@@ -67,9 +67,12 @@ frontend/src/components/settings
 **Files:**
 
 - Create: `go.mod`
+- Restore/update: `go.sum`
 - Create: `main.go`
 - Create: `app.go`
 - Create: `wails.json`
+- Create: `frontend/dist/index.html`
+- Delete: `app_local_test.go`
 
 - [ ] **Step 1: Write `go.mod`**
 
@@ -258,16 +261,32 @@ func (a *App) ResizeTerminal(sessionID string, size domain.TerminalSize) error {
 }
 ```
 
-- [ ] **Step 5: Verify skeleton compiles far enough to expose missing internal packages**
+- [ ] **Step 5: Add the minimal embedded frontend asset**
+
+Create `frontend/dist/index.html`:
+
+```html
+<div id="root"></div>
+```
+
+- [ ] **Step 6: Remove the incompatible legacy local-terminal test**
+
+Delete `app_local_test.go`. It tests the previous local terminal bootstrap (`defaultLocalConnection`, `isLocalConnection`, and `ensureSingleLocalConnection`), which is intentionally outside the SSH-first MVP skeleton.
+
+- [ ] **Step 7: Restore module metadata**
+
+Restore or regenerate `go.sum` so plain `go test ./...` can evaluate the package graph without stopping on module metadata. If `go test ./...` reports `go: updates to go.mod needed`, run `go mod tidy` and keep the resulting Wails v2 indirect dependency block in `go.mod`.
+
+- [ ] **Step 8: Verify skeleton compiles far enough to expose missing internal packages**
 
 Run: `go test ./...`
 
 Expected: FAIL with import errors for `TermFlow/internal/appsvc`, `domain`, `sessions`, `sshclient`, and `storage`.
 
-- [ ] **Step 6: Commit skeleton**
+- [ ] **Step 9: Commit skeleton**
 
 ```bash
-git add go.mod main.go app.go wails.json
+git add go.mod go.sum main.go app.go wails.json frontend/dist/index.html app_local_test.go
 git commit -m "Restore TermFlow Wails shell"
 ```
 
