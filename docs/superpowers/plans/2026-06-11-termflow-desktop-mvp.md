@@ -77,7 +77,7 @@ frontend/src/components/settings
 - [ ] **Step 1: Write `go.mod`**
 
 ```go
-module TermFlow
+module termflow
 
 go 1.25.0
 
@@ -166,11 +166,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"TermFlow/internal/appsvc"
-	"TermFlow/internal/domain"
-	"TermFlow/internal/sessions"
-	"TermFlow/internal/sshclient"
-	"TermFlow/internal/storage"
+	"termflow/internal/appsvc"
+	"termflow/internal/domain"
+	"termflow/internal/sessions"
+	"termflow/internal/sshclient"
+	"termflow/internal/storage"
 )
 
 type App struct {
@@ -281,7 +281,7 @@ Restore or regenerate `go.sum` so plain `go test ./...` can evaluate the package
 
 Run: `go test ./...`
 
-Expected: FAIL with import errors for `TermFlow/internal/appsvc`, `domain`, `sessions`, `sshclient`, and `storage`.
+Expected: FAIL with import errors for `termflow/internal/appsvc`, `domain`, `sessions`, `sshclient`, and `storage`.
 
 - [ ] **Step 9: Commit skeleton**
 
@@ -433,7 +433,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"TermFlow/internal/domain"
+	"termflow/internal/domain"
 )
 
 func TestConnectionCRUD(t *testing.T) {
@@ -529,7 +529,7 @@ import (
 	"strings"
 	"time"
 
-	"TermFlow/internal/domain"
+	"termflow/internal/domain"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
@@ -733,7 +733,7 @@ package sshclient
 import (
 	"testing"
 
-	"TermFlow/internal/domain"
+	"termflow/internal/domain"
 )
 
 func TestBuildConfigRejectsMissingAuth(t *testing.T) {
@@ -776,7 +776,7 @@ import (
 	"sync"
 	"time"
 
-	"TermFlow/internal/domain"
+	"termflow/internal/domain"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -1040,8 +1040,8 @@ import (
 	"sync"
 	"testing"
 
-	"TermFlow/internal/domain"
-	"TermFlow/internal/sshclient"
+	"termflow/internal/domain"
+	"termflow/internal/sshclient"
 )
 
 type fakeEmitter struct {
@@ -1177,8 +1177,8 @@ import (
 	"sync"
 	"time"
 
-	"TermFlow/internal/domain"
-	"TermFlow/internal/sshclient"
+	"termflow/internal/domain"
+	"termflow/internal/sshclient"
 	"github.com/google/uuid"
 )
 
@@ -1373,10 +1373,10 @@ import (
 	"errors"
 	"strings"
 
-	"TermFlow/internal/domain"
-	"TermFlow/internal/sessions"
-	"TermFlow/internal/sshclient"
-	"TermFlow/internal/storage"
+	"termflow/internal/domain"
+	"termflow/internal/sessions"
+	"termflow/internal/sshclient"
+	"termflow/internal/storage"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
