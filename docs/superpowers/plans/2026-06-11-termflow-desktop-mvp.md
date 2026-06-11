@@ -421,6 +421,8 @@ git commit -m "Define TermFlow domain contracts"
 
 - Create: `internal/storage/store.go`
 - Create: `internal/storage/store_test.go`
+- Modify: `go.mod`
+- Modify: `go.sum`
 
 - [ ] **Step 1: Write failing storage tests**
 
@@ -709,10 +711,22 @@ Run: `go test ./internal/storage`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit storage**
+- [ ] **Step 5: Keep module metadata tidy**
+
+Run: `go mod tidy`
+
+Expected: PASS. Keep any `go.mod` / `go.sum` updates required by `modernc.org/sqlite` and the storage package imports.
+
+- [ ] **Step 6: Run storage tests after module tidy**
+
+Run: `go test ./internal/storage`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit storage**
 
 ```bash
-git add internal/storage/store.go internal/storage/store_test.go
+git add internal/storage/store.go internal/storage/store_test.go go.mod go.sum
 git commit -m "Persist SSH connection definitions"
 ```
 
