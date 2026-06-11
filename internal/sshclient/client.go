@@ -5,21 +5,25 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"termflow/internal/domain"
 )
 
 type ConnectRequest struct {
-	Host     string
-	Port     int
-	Username string
-	AuthType domain.AuthType
-	Password string
-	KeyPath  string
+	Host                  string
+	Port                  int
+	Username              string
+	AuthType              domain.AuthType
+	Password              string
+	KeyPath               string
+	InsecureIgnoreHostKey bool
+	HostKeyCallback       gossh.HostKeyCallback
 }
 
 type Runner interface {
@@ -101,7 +105,17 @@ func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 		return err
 	}
 
+	if err := shell.Shell(); err != nil {
+		_ = shell.Close()
+		return err
+	}
+
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = shell.Close()
+		return errors.New("terminal session is closed")
+	}
 	s.shell = shell
 	s.stdin = stdin
 	s.mu.Unlock()
@@ -109,16 +123,13 @@ func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 	go copyOutput(stdout, onData)
 	go copyOutput(stderr, onData)
 
-	if err := shell.Shell(); err != nil {
-		_ = shell.Close()
-		return err
-	}
-
 	go func() {
 		err := shell.Wait()
 
 		s.mu.Lock()
 		s.closed = true
+		s.shell = nil
+		s.stdin = nil
 		s.mu.Unlock()
 
 		if onExit != nil {
@@ -131,16 +142,18 @@ func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 
 func (s *realSession) Write(data string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	closed := s.closed
+	stdin := s.stdin
+	s.mu.Unlock()
 
-	if s.closed {
+	if closed {
 		return errors.New("terminal session is closed")
 	}
-	if s.stdin == nil {
+	if stdin == nil {
 		return errors.New("terminal session has not started")
 	}
 
-	_, err := io.WriteString(s.stdin, data)
+	_, err := io.WriteString(stdin, data)
 	return err
 }
 
@@ -167,7 +180,10 @@ func (s *realSession) Close() error {
 
 	s.closed = true
 	shell := s.shell
+	s.stdin = nil
+	s.shell = nil
 	client := s.client
+	s.client = nil
 	s.mu.Unlock()
 
 	if shell != nil {
@@ -186,10 +202,15 @@ func buildClientConfig(req ConnectRequest) (*gossh.ClientConfig, error) {
 		return nil, err
 	}
 
+	hostKeyCallback, err := hostKeyCallback(req)
+	if err != nil {
+		return nil, err
+	}
+
 	return &gossh.ClientConfig{
 		User:            strings.TrimSpace(req.Username),
 		Auth:            auth,
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         12 * time.Second,
 	}, nil
 }
@@ -206,12 +227,22 @@ func authMethods(req ConnectRequest) ([]gossh.AuthMethod, error) {
 			return nil, err
 		}
 
-		signer, err := gossh.ParsePrivateKeyWithPassphrase(key, []byte(req.Password))
-		if err != nil {
-			signer, err = gossh.ParsePrivateKey(key)
+		if req.Password == "" {
+			signer, err := gossh.ParsePrivateKey(key)
 			if err != nil {
 				return nil, err
 			}
+
+			return []gossh.AuthMethod{gossh.PublicKeys(signer)}, nil
+		}
+
+		signer, err := gossh.ParsePrivateKeyWithPassphrase(key, []byte(req.Password))
+		if err != nil {
+			plainSigner, plainErr := gossh.ParsePrivateKey(key)
+			if plainErr != nil {
+				return nil, err
+			}
+			signer = plainSigner
 		}
 
 		return []gossh.AuthMethod{gossh.PublicKeys(signer)}, nil
@@ -224,6 +255,52 @@ func authMethods(req ConnectRequest) ([]gossh.AuthMethod, error) {
 
 		return []gossh.AuthMethod{gossh.Password(req.Password)}, nil
 	}
+}
+
+func hostKeyCallback(req ConnectRequest) (gossh.HostKeyCallback, error) {
+	if req.HostKeyCallback != nil {
+		return req.HostKeyCallback, nil
+	}
+	if req.InsecureIgnoreHostKey {
+		return gossh.InsecureIgnoreHostKey(), nil
+	}
+
+	path, err := defaultKnownHostsPath()
+	if err != nil {
+		return nil, err
+	}
+
+	callback, err := knownhosts.New(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf(
+				"ssh host key verification requires a known_hosts file at %s; create it, provide HostKeyCallback, or set InsecureIgnoreHostKey for development-only connections: %w",
+				path,
+				err,
+			)
+		}
+
+		return nil, fmt.Errorf("load known_hosts from %s: %w", path, err)
+	}
+
+	return callback, nil
+}
+
+func defaultKnownHostsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf(
+			"ssh host key verification requires ~/.ssh/known_hosts; provide HostKeyCallback or set InsecureIgnoreHostKey for development-only connections: %w",
+			err,
+		)
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New(
+			"ssh host key verification requires ~/.ssh/known_hosts; provide HostKeyCallback or set InsecureIgnoreHostKey for development-only connections",
+		)
+	}
+
+	return filepath.Join(home, ".ssh", "known_hosts"), nil
 }
 
 func address(req ConnectRequest) string {
