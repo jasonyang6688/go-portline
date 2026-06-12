@@ -76,7 +76,22 @@ type realSession struct {
 func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExit func(error)) error {
 	size = NormalizeSize(size)
 
-	shell, err := s.client.NewSession()
+	s.mu.Lock()
+	switch {
+	case s.closed:
+		s.mu.Unlock()
+		return errors.New("terminal session is closed")
+	case s.client == nil:
+		s.mu.Unlock()
+		return errors.New("terminal session client is unavailable")
+	case s.shell != nil || s.stdin != nil:
+		s.mu.Unlock()
+		return errors.New("terminal session has already started")
+	}
+	client := s.client
+	s.mu.Unlock()
+
+	shell, err := client.NewSession()
 	if err != nil {
 		return err
 	}
@@ -113,10 +128,15 @@ func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 	}
 
 	s.mu.Lock()
-	if s.closed {
+	switch {
+	case s.closed || s.client == nil:
 		s.mu.Unlock()
 		_ = shell.Close()
 		return errors.New("terminal session is closed")
+	case s.shell != nil || s.stdin != nil:
+		s.mu.Unlock()
+		_ = shell.Close()
+		return errors.New("terminal session has already started")
 	}
 	s.shell = shell
 	s.stdin = stdin
@@ -132,8 +152,13 @@ func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 		s.closed = true
 		s.shell = nil
 		s.stdin = nil
+		client := s.client
+		s.client = nil
 		s.mu.Unlock()
 
+		if client != nil {
+			_ = client.Close()
+		}
 		if onExit != nil {
 			onExit(err)
 		}
@@ -175,16 +200,11 @@ func (s *realSession) Resize(size domain.TerminalSize) error {
 
 func (s *realSession) Close() error {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
-
-	s.closed = true
 	shell := s.shell
+	client := s.client
+	s.closed = true
 	s.stdin = nil
 	s.shell = nil
-	client := s.client
 	s.client = nil
 	s.mu.Unlock()
 

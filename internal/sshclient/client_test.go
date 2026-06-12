@@ -206,6 +206,14 @@ func TestAddress(t *testing.T) {
 			},
 			want: "[2001:db8::1]:2222",
 		},
+		{
+			name: "ipv4 literal",
+			req: ConnectRequest{
+				Host: "192.0.2.10",
+				Port: 2222,
+			},
+			want: "192.0.2.10:2222",
+		},
 	}
 
 	for _, tt := range tests {
@@ -214,6 +222,22 @@ func TestAddress(t *testing.T) {
 				t.Fatalf("address() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRealSessionStartAfterCloseReturnsError(t *testing.T) {
+	session := &realSession{}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	err := session.Start(domain.TerminalSize{}, nil, nil)
+	if err == nil {
+		t.Fatal("Start() error = nil, want closed session error")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("Start() error = %q, want closed session message", err)
 	}
 }
 
