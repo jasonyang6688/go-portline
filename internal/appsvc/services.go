@@ -16,15 +16,17 @@ import (
 var (
 	errStoreUnavailable    = errors.New("store is unavailable")
 	errRegistryUnavailable = errors.New("session registry is unavailable")
+	errRunnerUnavailable   = errors.New("ssh runner is unavailable")
 )
 
 type Service struct {
 	store    *storage.Store
 	registry *sessions.Registry
+	runner   sshclient.Runner
 }
 
-func NewService(store *storage.Store, registry *sessions.Registry) *Service {
-	return &Service{store: store, registry: registry}
+func NewService(store *storage.Store, registry *sessions.Registry, runner sshclient.Runner) *Service {
+	return &Service{store: store, registry: registry, runner: runner}
 }
 
 func (s *Service) ListConnections() ([]domain.Connection, error) {
@@ -49,11 +51,14 @@ func (s *Service) DeleteConnection(id string) error {
 }
 
 func (s *Service) TestConnection(input domain.TestConnectionInput) error {
+	if s == nil || s.runner == nil {
+		return errRunnerUnavailable
+	}
 	req, err := s.connectRequest(input)
 	if err != nil {
 		return err
 	}
-	return sshclient.RealRunner{}.Test(req)
+	return s.runner.Test(req)
 }
 
 func (s *Service) OpenSession(input domain.OpenSessionInput) (domain.Session, error) {
@@ -70,9 +75,10 @@ func (s *Service) OpenSession(input domain.OpenSessionInput) (domain.Session, er
 	}
 
 	return s.registry.Open(sessions.OpenRequest{
-		Connection: conn,
-		Password:   input.Password,
-		Size:       input.Size,
+		Connection:            conn,
+		Password:              input.Password,
+		Size:                  input.Size,
+		InsecureIgnoreHostKey: input.InsecureIgnoreHostKey,
 	})
 }
 
@@ -109,26 +115,29 @@ func (s *Service) connectRequest(input domain.TestConnectionInput) (sshclient.Co
 			return sshclient.ConnectRequest{}, err
 		}
 		return sshclient.ConnectRequest{
-			Host:     conn.Host,
-			Port:     conn.Port,
-			Username: conn.Username,
-			AuthType: conn.AuthType,
-			Password: input.Password,
-			KeyPath:  conn.KeyPath,
+			Host:                  strings.TrimSpace(conn.Host),
+			Port:                  conn.Port,
+			Username:              strings.TrimSpace(conn.Username),
+			AuthType:              conn.AuthType,
+			Password:              input.Password,
+			KeyPath:               strings.TrimSpace(conn.KeyPath),
+			InsecureIgnoreHostKey: input.InsecureIgnoreHostKey,
 		}, nil
 	}
 
-	if strings.TrimSpace(input.Host) == "" {
+	host := strings.TrimSpace(input.Host)
+	if host == "" {
 		return sshclient.ConnectRequest{}, errors.New("host is required")
 	}
 
 	return sshclient.ConnectRequest{
-		Host:     input.Host,
-		Port:     input.Port,
-		Username: input.Username,
-		AuthType: input.AuthType,
-		Password: input.Password,
-		KeyPath:  input.KeyPath,
+		Host:                  host,
+		Port:                  input.Port,
+		Username:              strings.TrimSpace(input.Username),
+		AuthType:              input.AuthType,
+		Password:              input.Password,
+		KeyPath:               strings.TrimSpace(input.KeyPath),
+		InsecureIgnoreHostKey: input.InsecureIgnoreHostKey,
 	}, nil
 }
 

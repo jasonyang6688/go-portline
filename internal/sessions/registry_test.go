@@ -191,8 +191,9 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 			AuthType: domain.AuthPassword,
 			KeyPath:  "/keys/prod",
 		},
-		Password: "secret",
-		Size:     domain.TerminalSize{Cols: 100, Rows: 30},
+		Password:              "secret",
+		Size:                  domain.TerminalSize{Cols: 100, Rows: 30},
+		InsecureIgnoreHostKey: true,
 	}
 
 	session, err := reg.Open(req)
@@ -226,7 +227,8 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 		connectReq.Username != req.Connection.Username ||
 		connectReq.AuthType != req.Connection.AuthType ||
 		connectReq.Password != req.Password ||
-		connectReq.KeyPath != req.Connection.KeyPath {
+		connectReq.KeyPath != req.Connection.KeyPath ||
+		connectReq.InsecureIgnoreHostKey != req.InsecureIgnoreHostKey {
 		t.Fatalf("Connect request = %#v, want forwarded OpenRequest fields", connectReq)
 	}
 

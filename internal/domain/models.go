@@ -55,19 +55,21 @@ type SaveConnectionInput struct {
 }
 
 type TestConnectionInput struct {
-	ConnectionID string   `json:"connectionId"`
-	Host         string   `json:"host"`
-	Port         int      `json:"port"`
-	Username     string   `json:"username"`
-	AuthType     AuthType `json:"authType"`
-	Password     string   `json:"password"`
-	KeyPath      string   `json:"keyPath"`
+	ConnectionID          string   `json:"connectionId"`
+	Host                  string   `json:"host"`
+	Port                  int      `json:"port"`
+	Username              string   `json:"username"`
+	AuthType              AuthType `json:"authType"`
+	Password              string   `json:"password"`
+	KeyPath               string   `json:"keyPath"`
+	InsecureIgnoreHostKey bool     `json:"insecureIgnoreHostKey"`
 }
 
 type OpenSessionInput struct {
-	ConnectionID string       `json:"connectionId"`
-	Password     string       `json:"password"`
-	Size         TerminalSize `json:"size"`
+	ConnectionID          string       `json:"connectionId"`
+	Password              string       `json:"password"`
+	Size                  TerminalSize `json:"size"`
+	InsecureIgnoreHostKey bool         `json:"insecureIgnoreHostKey"`
 }
 
 type Session struct {

@@ -40,9 +40,10 @@ func (a *App) startup(ctx context.Context) {
 		panic(fmt.Sprintf("open TermFlow store: %v", err))
 	}
 
+	runner := sshclient.RealRunner{}
 	a.store = store
-	a.registry = sessions.NewRegistry(sshclient.RealRunner{}, appsvc.NewWailsEmitter(ctx))
-	a.service = appsvc.NewService(store, a.registry)
+	a.registry = sessions.NewRegistry(runner, appsvc.NewWailsEmitter(ctx))
+	a.service = appsvc.NewService(store, a.registry, runner)
 }
 
 func (a *App) shutdown(context.Context) {

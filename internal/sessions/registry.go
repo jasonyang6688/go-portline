@@ -18,9 +18,10 @@ type Emitter interface {
 }
 
 type OpenRequest struct {
-	Connection domain.Connection
-	Password   string
-	Size       domain.TerminalSize
+	Connection            domain.Connection
+	Password              string
+	Size                  domain.TerminalSize
+	InsecureIgnoreHostKey bool
 }
 
 type Registry struct {
@@ -57,12 +58,13 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 	}
 
 	term, err := r.runner.Connect(sshclient.ConnectRequest{
-		Host:     req.Connection.Host,
-		Port:     req.Connection.Port,
-		Username: req.Connection.Username,
-		AuthType: req.Connection.AuthType,
-		Password: req.Password,
-		KeyPath:  req.Connection.KeyPath,
+		Host:                  req.Connection.Host,
+		Port:                  req.Connection.Port,
+		Username:              req.Connection.Username,
+		AuthType:              req.Connection.AuthType,
+		Password:              req.Password,
+		KeyPath:               req.Connection.KeyPath,
+		InsecureIgnoreHostKey: req.InsecureIgnoreHostKey,
 	})
 	if err != nil {
 		return domain.Session{}, err
