@@ -439,6 +439,104 @@ func TestOpenReplaysBufferedOutputBeforeConcurrentLiveOutput(t *testing.T) {
 	}
 }
 
+func TestOpenDefersExitUntilStartupOutputReplayCompletes(t *testing.T) {
+	emitter := newBlockingOutputEmitter("buffered-1")
+	term := &fakeSession{
+		startChunks: [][]byte{
+			[]byte("buffered-1"),
+			[]byte("buffered-2"),
+		},
+	}
+	reg := NewRegistry(&fakeRunner{session: term}, emitter)
+
+	type openResult struct {
+		session domain.Session
+		err     error
+	}
+
+	openDone := make(chan openResult, 1)
+	go func() {
+		session, err := reg.Open(OpenRequest{
+			Connection: domain.Connection{
+				ID:       "c1",
+				Name:     "prod",
+				Host:     "127.0.0.1",
+				Port:     22,
+				Username: "root",
+				AuthType: domain.AuthPassword,
+			},
+			Password: "secret",
+			Size:     domain.TerminalSize{Cols: 120, Rows: 40},
+		})
+		openDone <- openResult{session: session, err: err}
+	}()
+
+	select {
+	case <-emitter.blockStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for buffered replay to start")
+	}
+
+	exitDone := make(chan struct{})
+	go func() {
+		term.emitExit(nil)
+		close(exitDone)
+	}()
+
+	close(emitter.releaseBlock)
+
+	var result openResult
+	select {
+	case result = <-openDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Open() to finish")
+	}
+	if result.err != nil {
+		t.Fatalf("Open() error = %v", result.err)
+	}
+	if result.session.ID == "" {
+		t.Fatal("Open() session ID is empty")
+	}
+
+	select {
+	case <-exitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for exit callback")
+	}
+
+	events := emitter.snapshot()
+	if len(events) != 6 {
+		t.Fatalf("events = %#v, want created + connected + two outputs + disconnected + closed", events)
+	}
+
+	wantNames := []string{
+		domain.EventSessionCreated,
+		domain.EventSessionStatus,
+		domain.EventSessionOutput,
+		domain.EventSessionOutput,
+		domain.EventSessionStatus,
+		domain.EventSessionClosed,
+	}
+	for i, want := range wantNames {
+		if events[i].name != want {
+			t.Fatalf("event[%d].name = %q, want %q (events=%#v)", i, events[i].name, want, events)
+		}
+	}
+
+	firstOutput, ok := events[2].data.(domain.SessionOutputEvent)
+	if !ok || firstOutput.Data != "buffered-1" {
+		t.Fatalf("event[2] = %#v, want buffered-1 output", events[2])
+	}
+	secondOutput, ok := events[3].data.(domain.SessionOutputEvent)
+	if !ok || secondOutput.Data != "buffered-2" {
+		t.Fatalf("event[3] = %#v, want buffered-2 output", events[3])
+	}
+	disconnected, ok := events[4].data.(domain.SessionStatusEvent)
+	if !ok || disconnected.Status != domain.SessionDisconnected {
+		t.Fatalf("event[4] = %#v, want disconnected status after buffered output", events[4])
+	}
+}
+
 func TestOpenStartFailureClosesAndRemovesSessionWithoutEmitting(t *testing.T) {
 	emitter := &fakeEmitter{}
 	term := &fakeSession{

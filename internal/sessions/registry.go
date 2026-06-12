@@ -81,6 +81,8 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 		mu       sync.Mutex
 		ready    bool
 		failed   bool
+		exited   bool
+		exitErr  error
 		buffered []string
 	}
 
@@ -106,6 +108,19 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 		}
 		emitOutput(payload)
 	}, func(exitErr error) {
+		startState.mu.Lock()
+		if startState.failed {
+			startState.mu.Unlock()
+			return
+		}
+		if !startState.ready {
+			startState.exited = true
+			startState.exitErr = exitErr
+			startState.mu.Unlock()
+			return
+		}
+		startState.mu.Unlock()
+
 		r.onExit(id, exitErr)
 	}); err != nil {
 		startState.mu.Lock()
@@ -131,7 +146,13 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 	}
 	startState.buffered = nil
 	startState.ready = true
+	exited := startState.exited
+	exitErr := startState.exitErr
 	startState.mu.Unlock()
+
+	if exited {
+		r.onExit(id, exitErr)
+	}
 
 	return model, nil
 }
