@@ -107,7 +107,7 @@ export default function App() {
           <section className="panel-card">
             <div className="panel-card__header">
               <h2>Sidebar</h2>
-              <span className="panel-card__hint">Placeholder</span>
+              <span className="panel-card__hint">Session queue</span>
             </div>
             <ul className="stack-list">
               <li>Recent sessions will appear here.</li>
@@ -118,13 +118,13 @@ export default function App() {
         </aside>
 
         <main className="main-pane">
-          <div className="tabs">
-            <button className="tab tab--active" type="button">
+          <div className="tabs" aria-label="Session tabs">
+            <span className="tab tab--active" aria-current="page">
               Welcome
-            </button>
-            <button className="tab" type="button">
+            </span>
+            <span className="tab">
               No session
-            </button>
+            </span>
             <button className="tab tab--ghost" type="button" aria-label="New session" title="New session" disabled>
               +
             </button>
