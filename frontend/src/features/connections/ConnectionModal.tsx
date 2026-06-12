@@ -45,7 +45,7 @@ export function ConnectionModal({ onCancel, onSave }: Props) {
         <header>
           <div>
             <strong id="new-connection-title">New SSH connection</strong>
-            <p className="tf-muted">Passwords are entered when a session is opened.</p>
+            <p className="tf-muted">Passwords are entered when a session is opened and are not persisted.</p>
           </div>
           <button
             className="icon-button"
@@ -97,6 +97,7 @@ export function ConnectionModal({ onCancel, onSave }: Props) {
           >
             <option value="password">Password</option>
             <option value="key">Private key</option>
+            <option value="agent">SSH agent</option>
           </select>
         </label>
 

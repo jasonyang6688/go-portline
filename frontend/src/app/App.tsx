@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { useEffect, useMemo, useState } from "react";
 import { ConnectionSidebar } from "../features/connections/ConnectionSidebar";
 import { ConnectionModal } from "../features/connections/ConnectionModal";
 import { SessionTabs } from "../features/sessions/SessionTabs";
 import { StatusBar } from "../features/status/StatusBar";
+import { TerminalPane } from "../features/terminal/TerminalPane";
 import {
   openSession,
   listConnections,
@@ -18,6 +17,7 @@ import type {
   SessionClosedEvent,
   SessionErrorEvent,
   SessionStatusEvent,
+  TerminalSize,
 } from "../features/connections/types";
 import {
   SESSION_CLOSED_EVENT,
@@ -41,54 +41,16 @@ function sortConnections(connections: Connection[]): Connection[] {
   });
 }
 
-function readTerminalSize(terminal: Terminal | null) {
-  if (!terminal || terminal.cols <= 0 || terminal.rows <= 0) {
-    return { cols: 120, rows: 32 };
-  }
-  return { cols: terminal.cols, rows: terminal.rows };
-}
-
-function renderPlaceholderTerminal(
-  terminal: Terminal,
-  fitAddon: FitAddon,
-  backendAvailable: boolean,
-  activeSession: Session | null,
-  activeConnection: Connection | null,
-  status: string,
-) {
-  fitAddon.fit();
-  terminal.reset();
-  terminal.writeln("\u001b[1;37mTermFlow shell ready\u001b[0m");
-  terminal.writeln("");
-
-  if (!backendAvailable) {
-    terminal.writeln("\u001b[38;5;180mPreview mode\u001b[0m");
-    terminal.writeln("Wails backend is not available.");
-    terminal.writeln("Connection management is disabled until the desktop runtime is attached.");
-  } else if (!activeSession || !activeConnection) {
-    terminal.writeln("\u001b[38;5;180mNo active SSH sessions.\u001b[0m");
-    terminal.writeln("Open a saved connection to start a terminal stream.");
-  } else {
-    terminal.writeln(`\u001b[38;5;109m[${activeSession.status}]\u001b[0m ${activeSession.name}`);
-    terminal.writeln(`${activeConnection.username}@${activeConnection.host}:${activeConnection.port}`);
-    terminal.writeln("Session opened. Inline terminal surface is active.");
-  }
-
-  terminal.writeln("");
-  terminal.writeln(`\u001b[38;5;245m${status}\u001b[0m`);
-  terminal.write("\r\n$ ");
-}
+const DEFAULT_TERMINAL_SIZE: TerminalSize = { cols: 120, rows: 32 };
 
 export default function App() {
-  const terminalHostRef = useRef<HTMLDivElement | null>(null);
-  const terminalInstanceRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready");
   const [backendAvailable, setBackendAvailable] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [terminalSize, setTerminalSize] = useState<TerminalSize>(DEFAULT_TERMINAL_SIZE);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -101,74 +63,6 @@ export default function App() {
         : null,
     [activeSession, connections],
   );
-
-  useEffect(() => {
-    if (!terminalHostRef.current) {
-      return;
-    }
-
-    const terminal = new Terminal({
-      cursorBlink: true,
-      convertEol: true,
-      fontFamily: '"IBM Plex Mono", "SFMono-Regular", Consolas, monospace',
-      fontSize: 13,
-      lineHeight: 1.15,
-      theme: {
-        background: "#101214",
-        foreground: "#d7d7cf",
-        black: "#0b0d0e",
-        red: "#d36c5a",
-        green: "#7ea66a",
-        yellow: "#c7a96b",
-        blue: "#6d8dad",
-        magenta: "#936c98",
-        cyan: "#62a6a3",
-        white: "#d6d1c4",
-        brightBlack: "#5a615f",
-        brightRed: "#ec8d77",
-        brightGreen: "#92c37c",
-        brightYellow: "#e4c780",
-        brightBlue: "#8cb0d3",
-        brightMagenta: "#bc89c4",
-        brightCyan: "#87c7c1",
-        brightWhite: "#f3efe3",
-      },
-    });
-
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(terminalHostRef.current);
-    terminalInstanceRef.current = terminal;
-    fitAddonRef.current = fitAddon;
-
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener("resize", handleResize);
-    handleResize();
-
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      terminalInstanceRef.current = null;
-      fitAddonRef.current = null;
-      terminal.dispose();
-    };
-  }, []);
-
-  useEffect(() => {
-    const terminal = terminalInstanceRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon) {
-      return;
-    }
-
-    renderPlaceholderTerminal(
-      terminal,
-      fitAddon,
-      backendAvailable,
-      activeSession,
-      activeConnection,
-      status,
-    );
-  }, [activeConnection, activeSession, backendAvailable, status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,7 +167,7 @@ export default function App() {
       const session = await openSession({
         connectionId: connection.id,
         password,
-        size: readTerminalSize(terminalInstanceRef.current),
+        size: terminalSize,
         insecureIgnoreHostKey,
       });
 
@@ -290,6 +184,12 @@ export default function App() {
       }
       throw error;
     }
+  }
+
+  function handleTerminalSizeChange(size: TerminalSize) {
+    setTerminalSize((current) =>
+      current.cols === size.cols && current.rows === size.rows ? current : size,
+    );
   }
 
   return (
@@ -346,11 +246,11 @@ export default function App() {
               </div>
               <div className="terminal-panel__stats">
                 <span>{activeSession ? activeSession.status : "Shell idle"}</span>
-                <span>Rows/Cols: auto-fit</span>
+                <span>{`Rows/Cols: ${terminalSize.rows}/${terminalSize.cols}`}</span>
               </div>
             </div>
             <div className="terminal-panel__body">
-              <div className="terminal-canvas" ref={terminalHostRef} />
+              <TerminalPane session={activeSession} onTerminalSizeChange={handleTerminalSizeChange} />
             </div>
           </section>
         </main>

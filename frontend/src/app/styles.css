@@ -277,6 +277,7 @@ button {
 
 .terminal-panel__body {
   min-height: 0;
+  display: flex;
   padding: 12px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 16%),
@@ -284,6 +285,7 @@ button {
 }
 
 .terminal-canvas {
+  flex: 1;
   height: 100%;
   min-height: 360px;
   border-radius: 12px;
@@ -297,6 +299,26 @@ button {
 
 .terminal-canvas .xterm {
   height: 100%;
+}
+
+.terminal-empty-state {
+  flex: 1;
+  min-height: 360px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  border-radius: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 20%),
+    rgba(16, 18, 20, 0.86);
+  color: #abb1ab;
+}
+
+.terminal-empty-state strong {
+  color: #ece6d6;
 }
 
 .statusbar {
