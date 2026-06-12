@@ -152,6 +152,7 @@ export default function App() {
     });
 
     const offClosed = onWailsEvent<SessionClosedEvent>(SESSION_CLOSED_EVENT, (event) => {
+      liveSessionIdsRef.current.delete(event.sessionId);
       setSessions((current) => current.filter((session) => session.id !== event.sessionId));
       setTerminalBuffers((current) => {
         const next = { ...current };
