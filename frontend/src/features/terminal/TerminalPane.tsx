@@ -1,35 +1,20 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import {
-  onWailsEvent,
-  resizeTerminal,
-  writeTerminal,
-} from "../../shared/api/wails";
-import type {
-  Session,
-  SessionOutputEvent,
-  SessionStatusEvent,
-  TerminalSize,
-} from "../connections/types";
-import {
-  SESSION_OUTPUT_EVENT,
-  SESSION_STATUS_EVENT,
-} from "../connections/types";
+import { resizeTerminal, writeTerminal } from "../../shared/api/wails";
+import type { Session, TerminalSize } from "../connections/types";
 
 interface Props {
   session: Session | null;
+  terminalBuffer: string;
   onTerminalSizeChange?(size: TerminalSize): void;
 }
 
-function formatStatusMessage(event: SessionStatusEvent): string {
-  const detail = event.message.trim();
-  return detail ? `[${event.status}] ${detail}` : `[${event.status}]`;
-}
-
-export function TerminalPane({ session, onTerminalSizeChange }: Props) {
+export function TerminalPane({ session, terminalBuffer, onTerminalSizeChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const lastSentSizeRef = useRef<TerminalSize | null>(null);
+  const lastWrittenBufferRef = useRef("");
   const sizeChangeRef = useRef<Props["onTerminalSizeChange"]>(onTerminalSizeChange);
 
   useEffect(() => {
@@ -74,6 +59,8 @@ export function TerminalPane({ session, onTerminalSizeChange }: Props) {
     terminal.focus();
 
     terminalRef.current = terminal;
+    lastSentSizeRef.current = null;
+    lastWrittenBufferRef.current = "";
 
     const syncTerminalSize = () => {
       fitAddon.fit();
@@ -81,6 +68,11 @@ export function TerminalPane({ session, onTerminalSizeChange }: Props) {
       if (size.cols <= 0 || size.rows <= 0) {
         return;
       }
+      const lastSentSize = lastSentSizeRef.current;
+      if (lastSentSize?.cols === size.cols && lastSentSize.rows === size.rows) {
+        return;
+      }
+      lastSentSizeRef.current = size;
       sizeChangeRef.current?.(size);
       void resizeTerminal(session.id, size);
     };
@@ -101,32 +93,31 @@ export function TerminalPane({ session, onTerminalSizeChange }: Props) {
       resizeObserver.disconnect();
       inputDisposable.dispose();
       terminalRef.current = null;
+      lastSentSizeRef.current = null;
+      lastWrittenBufferRef.current = "";
       terminal.dispose();
     };
   }, [session?.id]);
 
   useEffect(() => {
-    if (!session) {
+    const terminal = terminalRef.current;
+    if (!session || !terminal) {
       return;
     }
 
-    const offOutput = onWailsEvent<SessionOutputEvent>(SESSION_OUTPUT_EVENT, (event) => {
-      if (event.sessionId === session.id) {
-        terminalRef.current?.write(event.data);
-      }
-    });
-    const offStatus = onWailsEvent<SessionStatusEvent>(SESSION_STATUS_EVENT, (event) => {
-      if (event.sessionId !== session.id) {
-        return;
-      }
-      terminalRef.current?.writeln(`\r\n\u001b[38;5;245m${formatStatusMessage(event)}\u001b[0m`);
-    });
+    const previousBuffer = lastWrittenBufferRef.current;
+    if (terminalBuffer === previousBuffer) {
+      return;
+    }
 
-    return () => {
-      offOutput();
-      offStatus();
-    };
-  }, [session?.id]);
+    if (terminalBuffer.startsWith(previousBuffer)) {
+      terminal.write(terminalBuffer.slice(previousBuffer.length));
+    } else {
+      terminal.reset();
+      terminal.write(terminalBuffer);
+    }
+    lastWrittenBufferRef.current = terminalBuffer;
+  }, [session, terminalBuffer]);
 
   if (!session) {
     return (

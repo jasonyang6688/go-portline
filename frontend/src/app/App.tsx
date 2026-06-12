@@ -16,12 +16,14 @@ import type {
   Session,
   SessionClosedEvent,
   SessionErrorEvent,
+  SessionOutputEvent,
   SessionStatusEvent,
   TerminalSize,
 } from "../features/connections/types";
 import {
   SESSION_CLOSED_EVENT,
   SESSION_ERROR_EVENT,
+  SESSION_OUTPUT_EVENT,
   SESSION_STATUS_EVENT,
 } from "../features/connections/types";
 
@@ -42,10 +44,25 @@ function sortConnections(connections: Connection[]): Connection[] {
 }
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = { cols: 120, rows: 32 };
+const MAX_TERMINAL_BUFFER_LENGTH = 200_000;
+
+function appendTerminalData(buffer: string, data: string): string {
+  const next = buffer + data;
+  return next.length > MAX_TERMINAL_BUFFER_LENGTH
+    ? next.slice(next.length - MAX_TERMINAL_BUFFER_LENGTH)
+    : next;
+}
+
+function formatStatusLine(event: SessionStatusEvent): string {
+  const detail = event.message.trim();
+  const message = detail ? `[${event.status}] ${detail}` : `[${event.status}]`;
+  return `\r\n\u001b[38;5;245m${message}\u001b[0m\r\n`;
+}
 
 export default function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [terminalBuffers, setTerminalBuffers] = useState<Record<string, string>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready");
   const [backendAvailable, setBackendAvailable] = useState(true);
@@ -97,6 +114,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const offOutput = onWailsEvent<SessionOutputEvent>(SESSION_OUTPUT_EVENT, (event) => {
+      setTerminalBuffers((current) => ({
+        ...current,
+        [event.sessionId]: appendTerminalData(current[event.sessionId] ?? "", event.data),
+      }));
+    });
+
     const offStatus = onWailsEvent<SessionStatusEvent>(SESSION_STATUS_EVENT, (event) => {
       setSessions((current) =>
         current.map((session) =>
@@ -105,6 +129,10 @@ export default function App() {
             : session,
         ),
       );
+      setTerminalBuffers((current) => ({
+        ...current,
+        [event.sessionId]: appendTerminalData(current[event.sessionId] ?? "", formatStatusLine(event)),
+      }));
       setStatus(event.message ? `${event.status}: ${event.message}` : event.status);
     });
 
@@ -114,10 +142,16 @@ export default function App() {
 
     const offClosed = onWailsEvent<SessionClosedEvent>(SESSION_CLOSED_EVENT, (event) => {
       setSessions((current) => current.filter((session) => session.id !== event.sessionId));
+      setTerminalBuffers((current) => {
+        const next = { ...current };
+        delete next[event.sessionId];
+        return next;
+      });
       setStatus(`Session closed: ${event.sessionId}`);
     });
 
     return () => {
+      offOutput();
       offStatus();
       offError();
       offClosed();
@@ -172,6 +206,7 @@ export default function App() {
       });
 
       setSessions((current) => [...current, session]);
+      setTerminalBuffers((current) => ({ ...current, [session.id]: current[session.id] ?? "" }));
       setActiveSessionId(session.id);
       setBackendAvailable(true);
       setStatus(`Connected to ${connection.name}`);
@@ -250,7 +285,11 @@ export default function App() {
               </div>
             </div>
             <div className="terminal-panel__body">
-              <TerminalPane session={activeSession} onTerminalSizeChange={handleTerminalSizeChange} />
+              <TerminalPane
+                session={activeSession}
+                terminalBuffer={activeSession ? terminalBuffers[activeSession.id] ?? "" : ""}
+                onTerminalSizeChange={handleTerminalSizeChange}
+              />
             </div>
           </section>
         </main>
