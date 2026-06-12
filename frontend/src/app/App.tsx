@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectionSidebar } from "../features/connections/ConnectionSidebar";
 import { ConnectionModal } from "../features/connections/ConnectionModal";
 import { SessionTabs } from "../features/sessions/SessionTabs";
@@ -63,6 +63,7 @@ export default function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [terminalBuffers, setTerminalBuffers] = useState<Record<string, string>>({});
+  const liveSessionIdsRef = useRef<Set<string>>(new Set());
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready");
   const [backendAvailable, setBackendAvailable] = useState(true);
@@ -80,6 +81,10 @@ export default function App() {
         : null,
     [activeSession, connections],
   );
+
+  useEffect(() => {
+    liveSessionIdsRef.current = new Set(sessions.map((session) => session.id));
+  }, [sessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,6 +120,9 @@ export default function App() {
 
   useEffect(() => {
     const offOutput = onWailsEvent<SessionOutputEvent>(SESSION_OUTPUT_EVENT, (event) => {
+      if (!liveSessionIdsRef.current.has(event.sessionId)) {
+        return;
+      }
       setTerminalBuffers((current) => ({
         ...current,
         [event.sessionId]: appendTerminalData(current[event.sessionId] ?? "", event.data),
@@ -122,6 +130,9 @@ export default function App() {
     });
 
     const offStatus = onWailsEvent<SessionStatusEvent>(SESSION_STATUS_EVENT, (event) => {
+      if (!liveSessionIdsRef.current.has(event.sessionId)) {
+        return;
+      }
       setSessions((current) =>
         current.map((session) =>
           session.id === event.sessionId
@@ -205,8 +216,9 @@ export default function App() {
         insecureIgnoreHostKey,
       });
 
-      setSessions((current) => [...current, session]);
       setTerminalBuffers((current) => ({ ...current, [session.id]: current[session.id] ?? "" }));
+      liveSessionIdsRef.current = new Set([...liveSessionIdsRef.current, session.id]);
+      setSessions((current) => [...current, session]);
       setActiveSessionId(session.id);
       setBackendAvailable(true);
       setStatus(`Connected to ${connection.name}`);
