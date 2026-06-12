@@ -84,25 +84,27 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 		buffered []string
 	}
 
-	if err := term.Start(req.Size, func(data []byte) {
-		payload := string(data)
-
-		startState.mu.Lock()
-		if startState.failed {
-			startState.mu.Unlock()
-			return
-		}
-		if !startState.ready {
-			startState.buffered = append(startState.buffered, payload)
-			startState.mu.Unlock()
-			return
-		}
-		startState.mu.Unlock()
-
+	emitOutput := func(payload string) {
 		r.emit(domain.EventSessionOutput, domain.SessionOutputEvent{
 			SessionID: id,
 			Data:      payload,
 		})
+	}
+
+	if err := term.Start(req.Size, func(data []byte) {
+		payload := string(data)
+
+		startState.mu.Lock()
+		defer startState.mu.Unlock()
+
+		if startState.failed {
+			return
+		}
+		if !startState.ready {
+			startState.buffered = append(startState.buffered, payload)
+			return
+		}
+		emitOutput(payload)
 	}, func(exitErr error) {
 		r.onExit(id, exitErr)
 	}); err != nil {
@@ -124,17 +126,12 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 	})
 
 	startState.mu.Lock()
-	buffered := append([]string(nil), startState.buffered...)
+	for _, payload := range startState.buffered {
+		emitOutput(payload)
+	}
 	startState.buffered = nil
 	startState.ready = true
 	startState.mu.Unlock()
-
-	for _, payload := range buffered {
-		r.emit(domain.EventSessionOutput, domain.SessionOutputEvent{
-			SessionID: id,
-			Data:      payload,
-		})
-	}
 
 	return model, nil
 }

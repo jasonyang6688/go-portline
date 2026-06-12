@@ -35,6 +35,52 @@ func (e *fakeEmitter) snapshot() []emitted {
 	return out
 }
 
+type blockingOutputEmitter struct {
+	mu           sync.Mutex
+	events       []emitted
+	blockData    string
+	blockStarted chan struct{}
+	releaseBlock chan struct{}
+	blocked      bool
+}
+
+func newBlockingOutputEmitter(blockData string) *blockingOutputEmitter {
+	return &blockingOutputEmitter{
+		blockData:    blockData,
+		blockStarted: make(chan struct{}),
+		releaseBlock: make(chan struct{}),
+	}
+}
+
+func (e *blockingOutputEmitter) Emit(name string, data any) {
+	e.mu.Lock()
+	e.events = append(e.events, emitted{name: name, data: data})
+
+	shouldBlock := false
+	if !e.blocked && name == domain.EventSessionOutput {
+		output, ok := data.(domain.SessionOutputEvent)
+		if ok && output.Data == e.blockData {
+			e.blocked = true
+			shouldBlock = true
+		}
+	}
+	e.mu.Unlock()
+
+	if shouldBlock {
+		close(e.blockStarted)
+		<-e.releaseBlock
+	}
+}
+
+func (e *blockingOutputEmitter) snapshot() []emitted {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	out := make([]emitted, len(e.events))
+	copy(out, e.events)
+	return out
+}
+
 type fakeRunner struct {
 	mu      sync.Mutex
 	session sshclient.TerminalSession
@@ -67,17 +113,18 @@ func (r *fakeRunner) requests() []sshclient.ConnectRequest {
 }
 
 type fakeSession struct {
-	startErr   error
-	closeErr   error
-	startSize  domain.TerminalSize
-	started    bool
-	writes     []string
-	resizes    []domain.TerminalSize
-	closed     bool
-	startData  []byte
-	onData     func([]byte)
-	onExit     func(error)
-	closeCalls int
+	startErr    error
+	closeErr    error
+	startSize   domain.TerminalSize
+	started     bool
+	writes      []string
+	resizes     []domain.TerminalSize
+	closed      bool
+	startData   []byte
+	startChunks [][]byte
+	onData      func([]byte)
+	onExit      func(error)
+	closeCalls  int
 }
 
 func (s *fakeSession) Start(size domain.TerminalSize, onData func([]byte), onExit func(error)) error {
@@ -87,6 +134,12 @@ func (s *fakeSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 	s.onExit = onExit
 	if s.startErr != nil {
 		return s.startErr
+	}
+	if len(s.startChunks) > 0 && onData != nil {
+		for _, chunk := range s.startChunks {
+			onData(chunk)
+		}
+		return nil
 	}
 	if len(s.startData) > 0 && onData != nil {
 		onData(s.startData)
@@ -283,6 +336,106 @@ func TestOpenConnectFailureDoesNotEmitOrphanSessionEvents(t *testing.T) {
 	events := emitter.snapshot()
 	if len(events) != 0 {
 		t.Fatalf("events = %#v, want no session-scoped events", events)
+	}
+}
+
+func TestOpenReplaysBufferedOutputBeforeConcurrentLiveOutput(t *testing.T) {
+	emitter := newBlockingOutputEmitter("buffered-1")
+	term := &fakeSession{
+		startChunks: [][]byte{
+			[]byte("buffered-1"),
+			[]byte("buffered-2"),
+		},
+	}
+	reg := NewRegistry(&fakeRunner{session: term}, emitter)
+
+	type openResult struct {
+		session domain.Session
+		err     error
+	}
+
+	openDone := make(chan openResult, 1)
+	go func() {
+		session, err := reg.Open(OpenRequest{
+			Connection: domain.Connection{
+				ID:       "c1",
+				Name:     "prod",
+				Host:     "127.0.0.1",
+				Port:     22,
+				Username: "root",
+				AuthType: domain.AuthPassword,
+			},
+			Password: "secret",
+			Size:     domain.TerminalSize{Cols: 120, Rows: 40},
+		})
+		openDone <- openResult{session: session, err: err}
+	}()
+
+	select {
+	case <-emitter.blockStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for buffered replay to start")
+	}
+
+	liveDone := make(chan struct{})
+	go func() {
+		term.emitData([]byte("live"))
+		close(liveDone)
+	}()
+
+	close(emitter.releaseBlock)
+
+	var result openResult
+	select {
+	case result = <-openDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Open() to finish")
+	}
+	if result.err != nil {
+		t.Fatalf("Open() error = %v", result.err)
+	}
+	if result.session.ID == "" {
+		t.Fatal("Open() session ID is empty")
+	}
+
+	select {
+	case <-liveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for live output emission")
+	}
+
+	events := emitter.snapshot()
+	if len(events) != 5 {
+		t.Fatalf("events = %#v, want created + connected + two buffered outputs + live output", events)
+	}
+
+	outputs := make([]string, 0, 3)
+	for i, event := range events {
+		if i < 2 && event.name != map[int]string{
+			0: domain.EventSessionCreated,
+			1: domain.EventSessionStatus,
+		}[i] {
+			t.Fatalf("event[%d].name = %q, want lifecycle event before output", i, event.name)
+		}
+
+		if event.name != domain.EventSessionOutput {
+			continue
+		}
+		output, ok := event.data.(domain.SessionOutputEvent)
+		if !ok {
+			t.Fatalf("event[%d] = %#v, want session output event", i, event)
+		}
+		outputs = append(outputs, output.Data)
+	}
+
+	wantOutputs := []string{"buffered-1", "buffered-2", "live"}
+	if len(outputs) != len(wantOutputs) {
+		t.Fatalf("output count = %d, want %d (%#v)", len(outputs), len(wantOutputs), outputs)
+	}
+	for i, want := range wantOutputs {
+		if outputs[i] != want {
+			t.Fatalf("outputs = %#v, want %#v", outputs, wantOutputs)
+		}
 	}
 }
 
