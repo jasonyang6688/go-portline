@@ -56,12 +56,6 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 		LastActiveAt: now,
 	}
 
-	r.emit(domain.EventSessionStatus, domain.SessionStatusEvent{
-		SessionID: id,
-		Status:    domain.SessionConnecting,
-		Message:   "connecting",
-	})
-
 	term, err := r.runner.Connect(sshclient.ConnectRequest{
 		Host:     req.Connection.Host,
 		Port:     req.Connection.Port,
@@ -71,45 +65,54 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 		KeyPath:  req.Connection.KeyPath,
 	})
 	if err != nil {
-		r.emit(domain.EventSessionError, domain.SessionErrorEvent{
-			SessionID: id,
-			Message:   err.Error(),
-		})
-		r.emit(domain.EventSessionStatus, domain.SessionStatusEvent{
-			SessionID: id,
-			Status:    domain.SessionError,
-			Message:   err.Error(),
-		})
 		return domain.Session{}, err
 	}
 
 	model.Status = domain.SessionConnected
-	r.mu.Lock()
-	r.sessions[id] = &entry{
+	ent := &entry{
 		model: model,
 		term:  term,
 	}
+	r.mu.Lock()
+	r.sessions[id] = ent
 	r.mu.Unlock()
 
+	var startState struct {
+		mu       sync.Mutex
+		ready    bool
+		failed   bool
+		buffered []string
+	}
+
 	if err := term.Start(req.Size, func(data []byte) {
+		payload := string(data)
+
+		startState.mu.Lock()
+		if startState.failed {
+			startState.mu.Unlock()
+			return
+		}
+		if !startState.ready {
+			startState.buffered = append(startState.buffered, payload)
+			startState.mu.Unlock()
+			return
+		}
+		startState.mu.Unlock()
+
 		r.emit(domain.EventSessionOutput, domain.SessionOutputEvent{
 			SessionID: id,
-			Data:      string(data),
+			Data:      payload,
 		})
 	}, func(exitErr error) {
 		r.onExit(id, exitErr)
 	}); err != nil {
+		startState.mu.Lock()
+		startState.failed = true
+		startState.buffered = nil
+		startState.mu.Unlock()
+
 		_ = term.Close()
 		_, _ = r.remove(id)
-		r.emit(domain.EventSessionError, domain.SessionErrorEvent{
-			SessionID: id,
-			Message:   err.Error(),
-		})
-		r.emit(domain.EventSessionStatus, domain.SessionStatusEvent{
-			SessionID: id,
-			Status:    domain.SessionError,
-			Message:   err.Error(),
-		})
 		return domain.Session{}, err
 	}
 
@@ -119,6 +122,19 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 		Status:    domain.SessionConnected,
 		Message:   "connected",
 	})
+
+	startState.mu.Lock()
+	buffered := append([]string(nil), startState.buffered...)
+	startState.buffered = nil
+	startState.ready = true
+	startState.mu.Unlock()
+
+	for _, payload := range buffered {
+		r.emit(domain.EventSessionOutput, domain.SessionOutputEvent{
+			SessionID: id,
+			Data:      payload,
+		})
+	}
 
 	return model, nil
 }

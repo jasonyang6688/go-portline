@@ -116,6 +116,12 @@ func (s *fakeSession) emitExit(err error) {
 	}
 }
 
+func (s *fakeSession) emitData(data []byte) {
+	if s.onData != nil {
+		s.onData(data)
+	}
+}
+
 func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 	emitter := &fakeEmitter{}
 	term := &fakeSession{startData: []byte("hello\r\n")}
@@ -175,12 +181,15 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get() after open error = %v", err)
 	}
+	ent.mu.Lock()
+	ent.model.LastActiveAt = ent.model.LastActiveAt.Add(-time.Second)
 	beforeWrite := ent.model.LastActiveAt
-	time.Sleep(time.Millisecond)
+	ent.mu.Unlock()
 
 	if err := reg.Write(session.ID, "ls\r"); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
+	term.emitData([]byte("prompt> "))
 	if err := reg.Resize(session.ID, domain.TerminalSize{Cols: 80, Rows: 24}); err != nil {
 		t.Fatalf("Resize() error = %v", err)
 	}
@@ -206,8 +215,11 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 	if term.closeCalls != 1 {
 		t.Fatalf("Close calls = %d, want 1", term.closeCalls)
 	}
-	if ent.model.LastActiveAt.Before(beforeWrite) || ent.model.LastActiveAt.Equal(beforeWrite) {
-		t.Fatalf("LastActiveAt = %v, want later than %v", ent.model.LastActiveAt, beforeWrite)
+	ent.mu.Lock()
+	afterWrite := ent.model.LastActiveAt
+	ent.mu.Unlock()
+	if !afterWrite.After(beforeWrite) {
+		t.Fatalf("LastActiveAt = %v, want later than %v", afterWrite, beforeWrite)
 	}
 
 	events := emitter.snapshot()
@@ -215,24 +227,24 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 		t.Fatalf("events = %#v, want 6 lifecycle events", events)
 	}
 
-	statusConnecting, ok := events[0].data.(domain.SessionStatusEvent)
-	if events[0].name != domain.EventSessionStatus || !ok || statusConnecting.Status != domain.SessionConnecting {
-		t.Fatalf("event[0] = %#v, want connecting status", events[0])
+	created, ok := events[0].data.(domain.Session)
+	if events[0].name != domain.EventSessionCreated || !ok || created.ID != session.ID || created.Status != domain.SessionConnected {
+		t.Fatalf("event[0] = %#v, want created session", events[0])
 	}
 
-	output, ok := events[1].data.(domain.SessionOutputEvent)
-	if events[1].name != domain.EventSessionOutput || !ok || output.Data != "hello\r\n" || output.SessionID != session.ID {
-		t.Fatalf("event[1] = %#v, want output event", events[1])
+	statusConnected, ok := events[1].data.(domain.SessionStatusEvent)
+	if events[1].name != domain.EventSessionStatus || !ok || statusConnected.Status != domain.SessionConnected {
+		t.Fatalf("event[1] = %#v, want connected status", events[1])
 	}
 
-	created, ok := events[2].data.(domain.Session)
-	if events[2].name != domain.EventSessionCreated || !ok || created.ID != session.ID || created.Status != domain.SessionConnected {
-		t.Fatalf("event[2] = %#v, want created session", events[2])
+	output, ok := events[2].data.(domain.SessionOutputEvent)
+	if events[2].name != domain.EventSessionOutput || !ok || output.Data != "hello\r\n" || output.SessionID != session.ID {
+		t.Fatalf("event[2] = %#v, want buffered output event", events[2])
 	}
 
-	statusConnected, ok := events[3].data.(domain.SessionStatusEvent)
-	if events[3].name != domain.EventSessionStatus || !ok || statusConnected.Status != domain.SessionConnected {
-		t.Fatalf("event[3] = %#v, want connected status", events[3])
+	output, ok = events[3].data.(domain.SessionOutputEvent)
+	if events[3].name != domain.EventSessionOutput || !ok || output.Data != "prompt> " || output.SessionID != session.ID {
+		t.Fatalf("event[3] = %#v, want live output event", events[3])
 	}
 
 	statusClosed, ok := events[4].data.(domain.SessionStatusEvent)
@@ -246,7 +258,7 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 	}
 }
 
-func TestOpenEmitsErrorWhenConnectFails(t *testing.T) {
+func TestOpenConnectFailureDoesNotEmitOrphanSessionEvents(t *testing.T) {
 	emitter := &fakeEmitter{}
 	reg := NewRegistry(&fakeRunner{err: errors.New("dial failed")}, emitter)
 
@@ -269,26 +281,17 @@ func TestOpenEmitsErrorWhenConnectFails(t *testing.T) {
 	}
 
 	events := emitter.snapshot()
-	if len(events) != 3 {
-		t.Fatalf("events = %#v, want connecting + error + status error", events)
-	}
-
-	if events[0].name != domain.EventSessionStatus {
-		t.Fatalf("event[0].name = %q, want %q", events[0].name, domain.EventSessionStatus)
-	}
-	errEvent, ok := events[1].data.(domain.SessionErrorEvent)
-	if events[1].name != domain.EventSessionError || !ok || errEvent.Message != "dial failed" {
-		t.Fatalf("event[1] = %#v, want error event", events[1])
-	}
-	statusEvent, ok := events[2].data.(domain.SessionStatusEvent)
-	if events[2].name != domain.EventSessionStatus || !ok || statusEvent.Status != domain.SessionError {
-		t.Fatalf("event[2] = %#v, want error status", events[2])
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want no session-scoped events", events)
 	}
 }
 
-func TestOpenStartFailureClosesAndRemovesSession(t *testing.T) {
+func TestOpenStartFailureClosesAndRemovesSessionWithoutEmitting(t *testing.T) {
 	emitter := &fakeEmitter{}
-	term := &fakeSession{startErr: errors.New("start failed")}
+	term := &fakeSession{
+		startErr:  errors.New("start failed"),
+		startData: []byte("hello\r\n"),
+	}
 	reg := NewRegistry(&fakeRunner{session: term}, emitter)
 
 	session, err := reg.Open(OpenRequest{
@@ -317,11 +320,8 @@ func TestOpenStartFailureClosesAndRemovesSession(t *testing.T) {
 	}
 
 	events := emitter.snapshot()
-	if len(events) != 3 {
-		t.Fatalf("events = %#v, want connecting + error + status error", events)
-	}
-	if events[1].name != domain.EventSessionError {
-		t.Fatalf("event[1].name = %q, want %q", events[1].name, domain.EventSessionError)
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want no session-scoped events", events)
 	}
 }
 
@@ -356,17 +356,144 @@ func TestExitCallbackRemovesSessionAndEmitsDisconnected(t *testing.T) {
 	}
 
 	events := emitter.snapshot()
-	if len(events) != 5 {
-		t.Fatalf("events = %#v, want open events plus disconnected + closed", events)
+	if len(events) != 4 {
+		t.Fatalf("events = %#v, want created + connected + disconnected + closed", events)
 	}
 
-	disconnected, ok := events[3].data.(domain.SessionStatusEvent)
-	if events[3].name != domain.EventSessionStatus || !ok || disconnected.Status != domain.SessionDisconnected {
-		t.Fatalf("event[3] = %#v, want disconnected status", events[3])
+	disconnected, ok := events[2].data.(domain.SessionStatusEvent)
+	if events[2].name != domain.EventSessionStatus || !ok || disconnected.Status != domain.SessionDisconnected {
+		t.Fatalf("event[2] = %#v, want disconnected status", events[2])
 	}
-	closed, ok := events[4].data.(map[string]string)
-	if events[4].name != domain.EventSessionClosed || !ok || closed["sessionId"] != session.ID {
-		t.Fatalf("event[4] = %#v, want closed event", events[4])
+	closed, ok := events[3].data.(map[string]string)
+	if events[3].name != domain.EventSessionClosed || !ok || closed["sessionId"] != session.ID {
+		t.Fatalf("event[3] = %#v, want closed event", events[3])
+	}
+}
+
+func TestCloseThenExitCallbackDoesNotDoubleEmit(t *testing.T) {
+	emitter := &fakeEmitter{}
+	term := &fakeSession{}
+	reg := NewRegistry(&fakeRunner{session: term}, emitter)
+
+	session, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c1",
+			Name:     "prod",
+			Host:     "127.0.0.1",
+			Port:     22,
+			Username: "root",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 90, Rows: 20},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if err := reg.Close(session.ID); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	term.emitExit(nil)
+
+	events := emitter.snapshot()
+	if len(events) != 4 {
+		t.Fatalf("events = %#v, want created + connected + closed status + closed", events)
+	}
+	if events[2].name != domain.EventSessionStatus {
+		t.Fatalf("event[2].name = %q, want %q", events[2].name, domain.EventSessionStatus)
+	}
+	statusClosed, ok := events[2].data.(domain.SessionStatusEvent)
+	if !ok || statusClosed.Status != domain.SessionClosed {
+		t.Fatalf("event[2] = %#v, want closed status", events[2])
+	}
+	if events[3].name != domain.EventSessionClosed {
+		t.Fatalf("event[3].name = %q, want %q", events[3].name, domain.EventSessionClosed)
+	}
+}
+
+func TestCloseAllClosesEverySessionOnce(t *testing.T) {
+	emitter := &fakeEmitter{}
+	termA := &fakeSession{}
+	termB := &fakeSession{}
+	runner := &fakeRunner{session: termA}
+	reg := NewRegistry(runner, emitter)
+
+	sessionA, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c1",
+			Name:     "prod-a",
+			Host:     "127.0.0.1",
+			Port:     22,
+			Username: "root",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 90, Rows: 20},
+	})
+	if err != nil {
+		t.Fatalf("Open() sessionA error = %v", err)
+	}
+
+	runner.session = termB
+	sessionB, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c2",
+			Name:     "prod-b",
+			Host:     "127.0.0.2",
+			Port:     22,
+			Username: "admin",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 100, Rows: 24},
+	})
+	if err != nil {
+		t.Fatalf("Open() sessionB error = %v", err)
+	}
+
+	reg.CloseAll()
+
+	if !termA.closed || !termB.closed {
+		t.Fatalf("closed flags = (%v, %v), want both true", termA.closed, termB.closed)
+	}
+	if termA.closeCalls != 1 || termB.closeCalls != 1 {
+		t.Fatalf("close calls = (%d, %d), want both 1", termA.closeCalls, termB.closeCalls)
+	}
+	if _, err := reg.get(sessionA.ID); !errors.Is(err, errSessionNotFound) {
+		t.Fatalf("get(sessionA) error = %v, want session not found", err)
+	}
+	if _, err := reg.get(sessionB.ID); !errors.Is(err, errSessionNotFound) {
+		t.Fatalf("get(sessionB) error = %v, want session not found", err)
+	}
+
+	events := emitter.snapshot()
+	if len(events) != 8 {
+		t.Fatalf("events = %#v, want two created/connected pairs and two close pairs", events)
+	}
+
+	closedCounts := map[string]int{}
+	closedStatusCounts := map[string]int{}
+	for _, event := range events {
+		switch event.name {
+		case domain.EventSessionStatus:
+			status, ok := event.data.(domain.SessionStatusEvent)
+			if ok && status.Status == domain.SessionClosed {
+				closedStatusCounts[status.SessionID]++
+			}
+		case domain.EventSessionClosed:
+			closed, ok := event.data.(map[string]string)
+			if ok {
+				closedCounts[closed["sessionId"]]++
+			}
+		}
+	}
+
+	if closedStatusCounts[sessionA.ID] != 1 || closedStatusCounts[sessionB.ID] != 1 {
+		t.Fatalf("closed status counts = %#v, want one per session", closedStatusCounts)
+	}
+	if closedCounts[sessionA.ID] != 1 || closedCounts[sessionB.ID] != 1 {
+		t.Fatalf("closed event counts = %#v, want one per session", closedCounts)
 	}
 }
 
