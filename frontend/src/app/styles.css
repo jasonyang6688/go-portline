@@ -177,6 +177,12 @@ button {
   font-size: 0.75rem;
 }
 
+.panel-card__header p {
+  margin: 4px 0 0;
+  color: #8c948c;
+  font-size: 0.75rem;
+}
+
 .empty-state {
   margin-top: 14px;
   padding: 14px;
@@ -225,12 +231,15 @@ button {
 }
 
 .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px 12px 0 0;
   padding: 10px 14px;
   background: rgba(255, 255, 255, 0.03);
   color: #9ea59d;
-  cursor: default;
+  cursor: pointer;
 }
 
 .tab--active {
@@ -295,6 +304,263 @@ button {
   border-bottom: 0;
 }
 
+.tf-sidebar {
+  overflow: auto;
+}
+
+.tf-sidebar__header {
+  align-items: center;
+}
+
+.tf-panel-card {
+  display: grid;
+  gap: 16px;
+}
+
+.tf-connection-list {
+  display: grid;
+  gap: 12px;
+}
+
+.tf-connection-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tf-connection-card__meta,
+.tf-connection-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tf-connection-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tf-connection-card__target {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.82rem;
+  color: #d6d1c4;
+  word-break: break-all;
+}
+
+.tf-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(198, 173, 117, 0.24);
+  background: rgba(198, 173, 117, 0.12);
+  color: #e6d0a2;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tf-muted {
+  color: #8c948c;
+  font-size: 0.78rem;
+}
+
+.tf-field {
+  display: grid;
+  gap: 6px;
+}
+
+.tf-field span {
+  color: #a8afa7;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tf-field input,
+.tf-field select {
+  width: 100%;
+}
+
+.tf-field--static code {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(5, 7, 8, 0.52);
+  color: #cfc8b8;
+  font-size: 0.79rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.tf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #a8afa7;
+  font-size: 0.78rem;
+}
+
+.tf-toggle input {
+  margin: 0;
+}
+
+.tf-tabs {
+  min-width: 0;
+}
+
+.tf-tab {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.tf-tab--active {
+  cursor: pointer;
+}
+
+.tf-tab--placeholder {
+  cursor: default;
+}
+
+.tf-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #5a615f;
+  flex: 0 0 auto;
+}
+
+.tf-status-dot--idle,
+.tf-status-dot--connecting {
+  background: #c7a96b;
+}
+
+.tf-status-dot--connected {
+  background: #92c37c;
+}
+
+.tf-status-dot--disconnected,
+.tf-status-dot--closed {
+  background: #7b8479;
+}
+
+.tf-status-dot--error {
+  background: #ec8d77;
+}
+
+.tf-statusbar {
+  flex-wrap: wrap;
+}
+
+.tf-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  background: rgba(3, 5, 6, 0.72);
+}
+
+.tf-modal {
+  width: min(100%, 460px);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 24%),
+    rgba(16, 19, 21, 0.98);
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.42);
+}
+
+.tf-modal header,
+.tf-modal footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tf-modal footer {
+  justify-content: flex-end;
+}
+
+.tf-field-grid {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.tf-error {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(236, 141, 119, 0.28);
+  background: rgba(211, 108, 90, 0.12);
+  color: #f5b3a1;
+  font-size: 0.82rem;
+}
+
+.icon-button,
+.primary-button,
+.secondary-button,
+.tf-field input,
+.tf-field select {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.icon-button,
+.primary-button,
+.secondary-button {
+  min-height: 36px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.icon-button {
+  width: 36px;
+  padding: 0;
+  font-size: 1rem;
+}
+
+.primary-button {
+  background: linear-gradient(180deg, rgba(199, 169, 107, 0.28), rgba(127, 96, 48, 0.2));
+  border-color: rgba(199, 169, 107, 0.34);
+  color: #f3efe3;
+}
+
+.secondary-button {
+  color: #d9dbd3;
+}
+
+.icon-button:disabled,
+.primary-button:disabled,
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.tf-field input,
+.tf-field select {
+  min-height: 38px;
+  padding: 0 12px;
+  background: rgba(5, 7, 8, 0.52);
+  color: #ece6d6;
+}
+
+.tf-field input::placeholder {
+  color: #707770;
+}
+
 @media (max-width: 1100px) {
   .workspace {
     grid-template-columns: 56px 240px minmax(0, 1fr);
@@ -315,6 +581,10 @@ button {
 
   .main-pane {
     grid-column: 2;
+  }
+
+  .tf-field-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -356,5 +626,22 @@ button {
 
   .terminal-canvas {
     min-height: 300px;
+  }
+
+  .tf-modal-backdrop {
+    padding-top: 20px;
+  }
+
+  .tf-modal header,
+  .tf-modal footer,
+  .tf-connection-card__meta,
+  .tf-connection-card__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tf-connection-card__actions .primary-button,
+  .tf-modal footer button {
+    width: 100%;
   }
 }

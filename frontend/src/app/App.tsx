@@ -1,17 +1,115 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import { ConnectionSidebar } from "../features/connections/ConnectionSidebar";
+import { ConnectionModal } from "../features/connections/ConnectionModal";
+import { SessionTabs } from "../features/sessions/SessionTabs";
+import { StatusBar } from "../features/status/StatusBar";
+import {
+  openSession,
+  listConnections,
+  onWailsEvent,
+  saveConnection,
+} from "../shared/api/wails";
+import type {
+  Connection,
+  SaveConnectionInput,
+  Session,
+  SessionClosedEvent,
+  SessionErrorEvent,
+  SessionStatusEvent,
+} from "../features/connections/types";
+import {
+  SESSION_CLOSED_EVENT,
+  SESSION_ERROR_EVENT,
+  SESSION_STATUS_EVENT,
+} from "../features/connections/types";
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isBackendUnavailable(error: unknown): boolean {
+  return messageFromError(error) === "Wails backend is not available";
+}
+
+function sortConnections(connections: Connection[]): Connection[] {
+  return [...connections].sort((left, right) => {
+    const leftKey = `${left.group}\u0000${left.name}`.toLowerCase();
+    const rightKey = `${right.group}\u0000${right.name}`.toLowerCase();
+    return leftKey.localeCompare(rightKey);
+  });
+}
+
+function readTerminalSize(terminal: Terminal | null) {
+  if (!terminal || terminal.cols <= 0 || terminal.rows <= 0) {
+    return { cols: 120, rows: 32 };
+  }
+  return { cols: terminal.cols, rows: terminal.rows };
+}
+
+function renderPlaceholderTerminal(
+  terminal: Terminal,
+  fitAddon: FitAddon,
+  backendAvailable: boolean,
+  activeSession: Session | null,
+  activeConnection: Connection | null,
+  status: string,
+) {
+  fitAddon.fit();
+  terminal.reset();
+  terminal.writeln("\u001b[1;37mTermFlow shell ready\u001b[0m");
+  terminal.writeln("");
+
+  if (!backendAvailable) {
+    terminal.writeln("\u001b[38;5;180mPreview mode\u001b[0m");
+    terminal.writeln("Wails backend is not available.");
+    terminal.writeln("Connection management is disabled until the desktop runtime is attached.");
+  } else if (!activeSession || !activeConnection) {
+    terminal.writeln("\u001b[38;5;180mNo active SSH sessions.\u001b[0m");
+    terminal.writeln("Open a saved connection to start a terminal stream.");
+  } else {
+    terminal.writeln(`\u001b[38;5;109m[${activeSession.status}]\u001b[0m ${activeSession.name}`);
+    terminal.writeln(`${activeConnection.username}@${activeConnection.host}:${activeConnection.port}`);
+    terminal.writeln("Session opened. Inline terminal surface is active.");
+  }
+
+  terminal.writeln("");
+  terminal.writeln(`\u001b[38;5;245m${status}\u001b[0m`);
+  terminal.write("\r\n$ ");
+}
 
 export default function App() {
-  const terminalRef = useRef<HTMLDivElement | null>(null);
+  const terminalHostRef = useRef<HTMLDivElement | null>(null);
+  const terminalInstanceRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [status, setStatus] = useState("Ready");
+  const [backendAvailable, setBackendAvailable] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId) ?? null,
+    [activeSessionId, sessions],
+  );
+  const activeConnection = useMemo(
+    () =>
+      activeSession
+        ? connections.find((connection) => connection.id === activeSession.connectionId) ?? null
+        : null,
+    [activeSession, connections],
+  );
 
   useEffect(() => {
-    if (!terminalRef.current) {
+    if (!terminalHostRef.current) {
       return;
     }
 
     const terminal = new Terminal({
       cursorBlink: true,
+      convertEol: true,
       fontFamily: '"IBM Plex Mono", "SFMono-Regular", Consolas, monospace',
       fontSize: 13,
       lineHeight: 1.15,
@@ -39,29 +137,160 @@ export default function App() {
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.open(terminalRef.current);
-
-    const writeBanner = () => {
-      fitAddon.fit();
-      terminal.writeln("\u001b[1;37mTermFlow shell ready\u001b[0m");
-      terminal.writeln("");
-      terminal.writeln("\u001b[38;5;180mNo active SSH sessions.\u001b[0m");
-      terminal.writeln("Open a saved connection to start a terminal stream.");
-      terminal.writeln("");
-      terminal.writeln("\u001b[38;5;109mWaiting for an SSH session.\u001b[0m");
-      terminal.write("\r\n$ ");
-    };
-
-    writeBanner();
+    terminal.open(terminalHostRef.current);
+    terminalInstanceRef.current = terminal;
+    fitAddonRef.current = fitAddon;
 
     const handleResize = () => fitAddon.fit();
     window.addEventListener("resize", handleResize);
+    handleResize();
 
     return () => {
       window.removeEventListener("resize", handleResize);
+      terminalInstanceRef.current = null;
+      fitAddonRef.current = null;
       terminal.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    const terminal = terminalInstanceRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) {
+      return;
+    }
+
+    renderPlaceholderTerminal(
+      terminal,
+      fitAddon,
+      backendAvailable,
+      activeSession,
+      activeConnection,
+      status,
+    );
+  }, [activeConnection, activeSession, backendAvailable, status]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadConnections() {
+      try {
+        const loaded = await listConnections();
+        if (cancelled) {
+          return;
+        }
+        setConnections(sortConnections(loaded));
+        setBackendAvailable(true);
+        setStatus(loaded.length > 0 ? `Loaded ${loaded.length} saved connections` : "Ready");
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        if (isBackendUnavailable(error)) {
+          setBackendAvailable(false);
+          setStatus("Offline preview");
+          return;
+        }
+        setStatus(messageFromError(error));
+      }
+    }
+
+    void loadConnections();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const offStatus = onWailsEvent<SessionStatusEvent>(SESSION_STATUS_EVENT, (event) => {
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === event.sessionId
+            ? { ...session, status: event.status, lastActiveAt: new Date().toISOString() }
+            : session,
+        ),
+      );
+      setStatus(event.message ? `${event.status}: ${event.message}` : event.status);
+    });
+
+    const offError = onWailsEvent<SessionErrorEvent>(SESSION_ERROR_EVENT, (event) => {
+      setStatus(event.message);
+    });
+
+    const offClosed = onWailsEvent<SessionClosedEvent>(SESSION_CLOSED_EVENT, (event) => {
+      setSessions((current) => current.filter((session) => session.id !== event.sessionId));
+      setStatus(`Session closed: ${event.sessionId}`);
+    });
+
+    return () => {
+      offStatus();
+      offError();
+      offClosed();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeSessionId && sessions.some((session) => session.id === activeSessionId)) {
+      return;
+    }
+    setActiveSessionId(sessions[0]?.id ?? null);
+  }, [activeSessionId, sessions]);
+
+  async function handleSaveConnection(input: SaveConnectionInput) {
+    try {
+      const saved = await saveConnection(input);
+      setConnections((current) => {
+        const existingIndex = current.findIndex((connection) => connection.id === saved.id);
+        const next =
+          existingIndex >= 0
+            ? current.map((connection) => (connection.id === saved.id ? saved : connection))
+            : [...current, saved];
+        return sortConnections(next);
+      });
+      setBackendAvailable(true);
+      setStatus(`Saved connection: ${saved.name}`);
+      setIsModalOpen(false);
+    } catch (error) {
+      if (isBackendUnavailable(error)) {
+        setBackendAvailable(false);
+        setStatus("Offline preview");
+      } else {
+        setStatus(messageFromError(error));
+      }
+      throw error;
+    }
+  }
+
+  async function handleOpenConnection(
+    connection: Connection,
+    password: string,
+    insecureIgnoreHostKey: boolean,
+  ) {
+    setStatus(`Connecting to ${connection.name}`);
+
+    try {
+      const session = await openSession({
+        connectionId: connection.id,
+        password,
+        size: readTerminalSize(terminalInstanceRef.current),
+        insecureIgnoreHostKey,
+      });
+
+      setSessions((current) => [...current, session]);
+      setActiveSessionId(session.id);
+      setBackendAvailable(true);
+      setStatus(`Connected to ${connection.name}`);
+    } catch (error) {
+      if (isBackendUnavailable(error)) {
+        setBackendAvailable(false);
+        setStatus("Offline preview");
+      } else {
+        setStatus(messageFromError(error));
+      }
+      throw error;
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -71,8 +300,8 @@ export default function App() {
           <span className="titlebar__badge">SSH Workspace</span>
         </div>
         <div className="titlebar__meta">
-          <span>No workspace selected</span>
-          <span>No active session</span>
+          <span>{backendAvailable ? `${connections.length} saved connections` : "Offline preview"}</span>
+          <span>{activeSession ? `${activeSession.name} · ${activeSession.status}` : "No active session"}</span>
         </div>
       </header>
 
@@ -92,67 +321,54 @@ export default function App() {
           </button>
         </aside>
 
-        <aside className="sidebar">
-          <section className="panel-card">
-            <div className="panel-card__header">
-              <h1>Connections</h1>
-              <span className="panel-card__hint">0 configured</span>
-            </div>
-            <div className="empty-state">
-              <strong>No connections yet</strong>
-              <p>Saved hosts will appear here after a connection is added.</p>
-            </div>
-          </section>
-
-          <section className="panel-card">
-            <div className="panel-card__header">
-              <h2>Sidebar</h2>
-              <span className="panel-card__hint">Session queue</span>
-            </div>
-            <ul className="stack-list">
-              <li>Recent sessions will appear here.</li>
-              <li>Connection groups will organize saved hosts.</li>
-              <li>Session details will update as terminals open.</li>
-            </ul>
-          </section>
-        </aside>
+        <ConnectionSidebar
+          connections={connections}
+          onCreate={() => setIsModalOpen(true)}
+          onOpen={handleOpenConnection}
+        />
 
         <main className="main-pane">
-          <div className="tabs" aria-label="Session tabs">
-            <span className="tab tab--active" aria-current="page">
-              Welcome
-            </span>
-            <span className="tab">
-              No session
-            </span>
-            <button className="tab tab--ghost" type="button" aria-label="New session" title="New session" disabled>
-              +
-            </button>
-          </div>
+          <SessionTabs
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onActivate={setActiveSessionId}
+          />
 
           <section className="terminal-panel">
             <div className="terminal-panel__header">
               <div>
                 <strong>Terminal</strong>
-                <span className="terminal-panel__subtle">No SSH session attached</span>
+                <span className="terminal-panel__subtle">
+                  {activeSession && activeConnection
+                    ? `${activeConnection.username}@${activeConnection.host}:${activeConnection.port}`
+                    : "No SSH session attached"}
+                </span>
               </div>
               <div className="terminal-panel__stats">
-                <span>Shell idle</span>
+                <span>{activeSession ? activeSession.status : "Shell idle"}</span>
                 <span>Rows/Cols: auto-fit</span>
               </div>
             </div>
             <div className="terminal-panel__body">
-              <div className="terminal-canvas" ref={terminalRef} />
+              <div className="terminal-canvas" ref={terminalHostRef} />
             </div>
           </section>
         </main>
       </div>
 
-      <footer className="statusbar">
-        <span>Ready</span>
-        <span>No connections configured</span>
-        <span>No terminal activity</span>
-      </footer>
+      <StatusBar
+        status={status}
+        sessions={sessions}
+        activeSession={activeSession}
+        backendAvailable={backendAvailable}
+      />
+
+      {isModalOpen ? (
+        <ConnectionModal
+          onCancel={() => setIsModalOpen(false)}
+          onSave={handleSaveConnection}
+        />
+      ) : null}
     </div>
   );
 }
