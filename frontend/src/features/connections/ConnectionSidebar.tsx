@@ -34,6 +34,7 @@ export function ConnectionSidebar({ connections, onCreate, onOpen }: Props) {
         passwordById[connection.id] ?? "",
         insecureById[connection.id] ?? false,
       );
+      setPasswordById((current) => ({ ...current, [connection.id]: "" }));
     } catch (error) {
       setErrorById((current) => ({
         ...current,
@@ -108,8 +109,12 @@ export function ConnectionSidebar({ connections, onCreate, onOpen }: Props) {
                     </label>
                   ) : (
                     <div className="tf-field tf-field--static">
-                      <span>Private key</span>
-                      <code>{connection.keyPath || "No key path saved"}</code>
+                      <span>{connection.authType === "agent" ? "SSH agent" : "Private key"}</span>
+                      <code>
+                        {connection.authType === "agent"
+                          ? "Agent authentication"
+                          : connection.keyPath || "No key path saved"}
+                      </code>
                     </div>
                   )}
 

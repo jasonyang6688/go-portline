@@ -8,7 +8,12 @@ import type {
 } from "../../features/connections/types";
 
 type WailsEventRuntime = {
-  EventsOn?(name: string, callback: (data: unknown) => void): () => void;
+  EventsOn?(name: string, callback: (...data: unknown[]) => void): unknown;
+  EventsOnMultiple?(
+    name: string,
+    callback: (...data: unknown[]) => void,
+    maxCallbacks?: number,
+  ): unknown;
 };
 
 type WailsAppApi = {
@@ -74,9 +79,22 @@ export function resizeTerminal(sessionId: string, size: TerminalSize): Promise<v
 }
 
 export function onWailsEvent<T>(name: string, callback: (data: T) => void): () => void {
-  const on = window.runtime?.EventsOn;
-  if (!on) {
+  const runtime = window.runtime;
+  if (!runtime) {
     return () => {};
   }
-  return on(name, (data: unknown) => callback(data as T));
+
+  const eventCallback = (...data: unknown[]) => callback(data[0] as T);
+
+  if (runtime.EventsOn) {
+    const unsubscribe = runtime.EventsOn(name, eventCallback);
+    return typeof unsubscribe === "function" ? () => unsubscribe() : () => {};
+  }
+
+  if (runtime.EventsOnMultiple) {
+    const unsubscribe = runtime.EventsOnMultiple(name, eventCallback, -1);
+    return typeof unsubscribe === "function" ? () => unsubscribe() : () => {};
+  }
+
+  throw new Error("Wails runtime event API is not available");
 }
