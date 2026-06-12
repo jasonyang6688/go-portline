@@ -125,6 +125,12 @@ button {
   color: #f2dfb9;
 }
 
+.rail__item:disabled,
+.tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .sidebar,
 .main-pane {
   min-height: 0;

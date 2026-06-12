@@ -46,9 +46,9 @@ export default function App() {
       terminal.writeln("\u001b[1;37mTermFlow shell ready\u001b[0m");
       terminal.writeln("");
       terminal.writeln("\u001b[38;5;180mNo active SSH sessions.\u001b[0m");
-      terminal.writeln("Create a connection to start a terminal stream.");
+      terminal.writeln("Open a saved connection to start a terminal stream.");
       terminal.writeln("");
-      terminal.writeln("\u001b[38;5;109mTask 8/9 will wire backend sessions, tabs, and events.\u001b[0m");
+      terminal.writeln("\u001b[38;5;109mWaiting for an SSH session.\u001b[0m");
       terminal.write("\r\n$ ");
     };
 
@@ -68,27 +68,26 @@ export default function App() {
       <header className="titlebar">
         <div className="titlebar__brand">
           <span className="titlebar__app">TermFlow</span>
-          <span className="titlebar__badge">Shell Prototype</span>
+          <span className="titlebar__badge">SSH Workspace</span>
         </div>
         <div className="titlebar__meta">
-          <span>Workspace: local</span>
-          <span>Transport: offline</span>
-          <span>Sessions: 0</span>
+          <span>No workspace selected</span>
+          <span>No active session</span>
         </div>
       </header>
 
       <div className="workspace">
         <aside className="rail" aria-label="Primary navigation">
-          <button className="rail__item rail__item--active" type="button">
+          <button className="rail__item rail__item--active" type="button" aria-label="Terminal" title="Terminal">
             T
           </button>
-          <button className="rail__item" type="button">
+          <button className="rail__item" type="button" aria-label="Connections" title="Connections" disabled>
             C
           </button>
-          <button className="rail__item" type="button">
+          <button className="rail__item" type="button" aria-label="Files" title="Files" disabled>
             F
           </button>
-          <button className="rail__item" type="button">
+          <button className="rail__item" type="button" aria-label="Settings" title="Settings" disabled>
             S
           </button>
         </aside>
@@ -101,7 +100,7 @@ export default function App() {
             </div>
             <div className="empty-state">
               <strong>No connections yet</strong>
-              <p>Saved hosts, credential helpers, and quick actions arrive in Task 8.</p>
+              <p>Saved hosts will appear here after a connection is added.</p>
             </div>
           </section>
 
@@ -112,8 +111,8 @@ export default function App() {
             </div>
             <ul className="stack-list">
               <li>Recent sessions will appear here.</li>
-              <li>File and tunnel tools remain unmounted.</li>
-              <li>Backend status is intentionally absent.</li>
+              <li>Connection groups will organize saved hosts.</li>
+              <li>Session details will update as terminals open.</li>
             </ul>
           </section>
         </aside>
@@ -126,7 +125,7 @@ export default function App() {
             <button className="tab" type="button">
               No session
             </button>
-            <button className="tab tab--ghost" type="button">
+            <button className="tab tab--ghost" type="button" aria-label="New session" title="New session" disabled>
               +
             </button>
           </div>
@@ -135,10 +134,10 @@ export default function App() {
             <div className="terminal-panel__header">
               <div>
                 <strong>Terminal</strong>
-                <span className="terminal-panel__subtle">Ready for backend session attachment</span>
+                <span className="terminal-panel__subtle">No SSH session attached</span>
               </div>
               <div className="terminal-panel__stats">
-                <span>Shell: idle</span>
+                <span>Shell idle</span>
                 <span>Rows/Cols: auto-fit</span>
               </div>
             </div>
@@ -150,9 +149,9 @@ export default function App() {
       </div>
 
       <footer className="statusbar">
-        <span>State: shell-only UI</span>
-        <span>Next: Wails bridge and session manager</span>
-        <span>Build target: frontend/dist</span>
+        <span>Ready</span>
+        <span>No connections configured</span>
+        <span>No terminal activity</span>
       </footer>
     </div>
   );
