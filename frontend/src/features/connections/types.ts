@@ -80,6 +80,141 @@ export interface SessionClosedEvent {
   sessionId: string;
 }
 
+export interface RunCommandInput {
+  sessionId: string;
+  command: string;
+  broadcast: boolean;
+}
+
+export interface CommandHistoryFilter {
+  connectionId?: string;
+  sessionId?: string;
+  limit?: number;
+}
+
+export interface CommandHistoryEntry {
+  id: string;
+  sessionId: string;
+  connectionId: string;
+  connectionName: string;
+  command: string;
+  createdAt: string;
+}
+
+export interface SavedCommand {
+  id: string;
+  name: string;
+  command: string;
+  description: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveSavedCommandInput {
+  id?: string;
+  name: string;
+  command: string;
+  description: string;
+  tags: string[];
+}
+
+export interface AppSettings {
+  theme: "dark" | "light" | string;
+  accent: string;
+  fontSize: number;
+  transparency: boolean;
+  ligatures: boolean;
+  copyOnSelect: boolean;
+  sshAgent: boolean;
+  defaultKeyPath: string;
+  knownHostsPath: string;
+}
+
+export interface FileListInput {
+  sessionId?: string;
+  side: "local" | "remote";
+  path: string;
+}
+
+export interface FileReadInput {
+  sessionId?: string;
+  side: "local" | "remote";
+  path: string;
+}
+
+export interface FileSaveInput {
+  sessionId?: string;
+  side: "local" | "remote";
+  path: string;
+  content: string;
+}
+
+export interface FileMutationInput {
+  sessionId?: string;
+  side: "local" | "remote";
+  path: string;
+}
+
+export interface FileRenameInput {
+  sessionId?: string;
+  side: "local" | "remote";
+  path: string;
+  newPath: string;
+}
+
+export interface FileTransferInput {
+  sessionId: string;
+  direction: "upload" | "download";
+  localPath: string;
+  remotePath: string;
+  overwrite: boolean;
+}
+
+export interface FileContent {
+  name: string;
+  path: string;
+  content: string;
+  language: string;
+  size: number;
+  modTime: string;
+  isBinary: boolean;
+}
+
+export interface FileTransferResult {
+  direction: "upload" | "download";
+  localPath: string;
+  remotePath: string;
+  bytesTransferred: number;
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  size: number;
+  sizeLabel: string;
+  modTime: string;
+  isDir: boolean;
+}
+
+export interface ProcessMetric {
+  name: string;
+  pid: number;
+  cpuPercent: number;
+  memory: string;
+  memoryPercent: number;
+}
+
+export interface MonitorSnapshot {
+  sessionId: string;
+  cpuPercent: number;
+  memoryPercent: number;
+  diskPercent: number;
+  loadAverage: string;
+  processes: ProcessMetric[];
+  updatedAt: string;
+}
+
 export const SESSION_CREATED_EVENT = "session:created";
 export const SESSION_OUTPUT_EVENT = "session:output";
 export const SESSION_STATUS_EVENT = "session:status";

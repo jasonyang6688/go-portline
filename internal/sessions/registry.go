@@ -181,6 +181,105 @@ func (r *Registry) Resize(sessionID string, size domain.TerminalSize) error {
 	return ent.term.Resize(size)
 }
 
+func (r *Registry) Run(sessionID string, command string) ([]byte, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return ent.term.Run(command)
+}
+
+func (r *Registry) ListFiles(sessionID string, path string) ([]domain.FileEntry, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return ent.term.ListFiles(path)
+}
+
+func (r *Registry) ReadFile(sessionID string, path string) (domain.FileContent, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return domain.FileContent{}, err
+	}
+	return ent.term.ReadFile(path)
+}
+
+func (r *Registry) WriteFile(sessionID string, path string, content string) error {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return err
+	}
+	return ent.term.WriteFile(path, content)
+}
+
+func (r *Registry) CreateFolder(sessionID string, path string) error {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return err
+	}
+	return ent.term.CreateFolder(path)
+}
+
+func (r *Registry) RenameFile(sessionID string, path string, newPath string) error {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return err
+	}
+	return ent.term.RenameFile(path, newPath)
+}
+
+func (r *Registry) DeleteFile(sessionID string, path string) error {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return err
+	}
+	return ent.term.DeleteFile(path)
+}
+
+func (r *Registry) UploadFile(sessionID string, localPath string, remotePath string, overwrite bool) (int64, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return ent.term.UploadFile(localPath, remotePath, overwrite)
+}
+
+func (r *Registry) DownloadFile(sessionID string, remotePath string, localPath string, overwrite bool) (int64, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return ent.term.DownloadFile(remotePath, localPath, overwrite)
+}
+
+func (r *Registry) Snapshot(sessionID string) (domain.Session, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	ent.mu.Lock()
+	defer ent.mu.Unlock()
+	return ent.model, nil
+}
+
+func (r *Registry) Sessions() []domain.Session {
+	r.mu.RLock()
+	entries := make([]*entry, 0, len(r.sessions))
+	for _, ent := range r.sessions {
+		entries = append(entries, ent)
+	}
+	r.mu.RUnlock()
+
+	out := make([]domain.Session, 0, len(entries))
+	for _, ent := range entries {
+		ent.mu.Lock()
+		out = append(out, ent.model)
+		ent.mu.Unlock()
+	}
+	return out
+}
+
 func (r *Registry) Close(sessionID string) error {
 	ent, err := r.remove(sessionID)
 	if err != nil {

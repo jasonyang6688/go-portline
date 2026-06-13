@@ -125,6 +125,9 @@ type fakeSession struct {
 	onData      func([]byte)
 	onExit      func(error)
 	closeCalls  int
+	runCommands []string
+	runOut      []byte
+	files       []domain.FileEntry
 }
 
 func (s *fakeSession) Start(size domain.TerminalSize, onData func([]byte), onExit func(error)) error {
@@ -156,6 +159,31 @@ func (s *fakeSession) Resize(size domain.TerminalSize) error {
 	s.resizes = append(s.resizes, size)
 	return nil
 }
+
+func (s *fakeSession) Run(command string) ([]byte, error) {
+	s.runCommands = append(s.runCommands, command)
+	return s.runOut, nil
+}
+
+func (s *fakeSession) ListFiles(string) ([]domain.FileEntry, error) {
+	return s.files, nil
+}
+
+func (s *fakeSession) ReadFile(path string) (domain.FileContent, error) {
+	return domain.FileContent{Name: path, Path: path, Content: "content"}, nil
+}
+
+func (s *fakeSession) WriteFile(string, string) error { return nil }
+
+func (s *fakeSession) CreateFolder(string) error { return nil }
+
+func (s *fakeSession) RenameFile(string, string) error { return nil }
+
+func (s *fakeSession) DeleteFile(string) error { return nil }
+
+func (s *fakeSession) UploadFile(string, string, bool) (int64, error) { return 0, nil }
+
+func (s *fakeSession) DownloadFile(string, string, bool) (int64, error) { return 0, nil }
 
 func (s *fakeSession) Close() error {
 	s.closed = true

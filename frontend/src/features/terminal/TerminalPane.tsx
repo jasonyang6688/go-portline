@@ -7,10 +7,53 @@ import type { Session, TerminalSize } from "../connections/types";
 interface Props {
   session: Session | null;
   terminalBuffer: string;
+  themeMode: "dark" | "light";
   onTerminalSizeChange?(size: TerminalSize): void;
 }
 
-export function TerminalPane({ session, terminalBuffer, onTerminalSizeChange }: Props) {
+const DARK_TERMINAL_THEME = {
+  background: "#0b0d14",
+  foreground: "#cad3f5",
+  black: "#181926",
+  red: "#ed8796",
+  green: "#a6da95",
+  yellow: "#eed49f",
+  blue: "#8aadf4",
+  magenta: "#c6a0f6",
+  cyan: "#91d7e3",
+  white: "#cad3f5",
+  brightBlack: "#5b6078",
+  brightRed: "#ed8796",
+  brightGreen: "#a6da95",
+  brightYellow: "#eed49f",
+  brightBlue: "#8aadf4",
+  brightMagenta: "#f5bde6",
+  brightCyan: "#8bd5ca",
+  brightWhite: "#f4dbd6",
+};
+
+const LIGHT_TERMINAL_THEME = {
+  background: "#eff1f5",
+  foreground: "#5c5f77",
+  black: "#5c5f77",
+  red: "#d20f39",
+  green: "#40a02b",
+  yellow: "#df8e1d",
+  blue: "#1e66f5",
+  magenta: "#8839ef",
+  cyan: "#179299",
+  white: "#4c4f69",
+  brightBlack: "#9ca0b0",
+  brightRed: "#d20f39",
+  brightGreen: "#40a02b",
+  brightYellow: "#df8e1d",
+  brightBlue: "#1e66f5",
+  brightMagenta: "#8839ef",
+  brightCyan: "#04a5e5",
+  brightWhite: "#4c4f69",
+};
+
+export function TerminalPane({ session, terminalBuffer, themeMode, onTerminalSizeChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const lastSentSizeRef = useRef<TerminalSize | null>(null);
@@ -29,33 +72,15 @@ export function TerminalPane({ session, terminalBuffer, onTerminalSizeChange }: 
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: true,
-      fontFamily: '"IBM Plex Mono", "SFMono-Regular", Consolas, monospace',
+      fontFamily: '"JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace',
       fontSize: 13,
-      lineHeight: 1.15,
-      theme: {
-        background: "#101214",
-        foreground: "#d7d7cf",
-        black: "#0b0d0e",
-        red: "#d36c5a",
-        green: "#7ea66a",
-        yellow: "#c7a96b",
-        blue: "#6d8dad",
-        magenta: "#936c98",
-        cyan: "#62a6a3",
-        white: "#d6d1c4",
-        brightBlack: "#5a615f",
-        brightRed: "#ec8d77",
-        brightGreen: "#92c37c",
-        brightYellow: "#e4c780",
-        brightBlue: "#8cb0d3",
-        brightMagenta: "#bc89c4",
-        brightCyan: "#87c7c1",
-        brightWhite: "#f3efe3",
-      },
+      lineHeight: 1.65,
+      theme: themeMode === "light" ? LIGHT_TERMINAL_THEME : DARK_TERMINAL_THEME,
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(hostRef.current);
+    hostRef.current.querySelector("textarea")?.setAttribute("name", "xterm-terminal-input");
     terminal.focus();
 
     terminalRef.current = terminal;
@@ -74,11 +99,19 @@ export function TerminalPane({ session, terminalBuffer, onTerminalSizeChange }: 
       }
       lastSentSizeRef.current = size;
       sizeChangeRef.current?.(size);
-      void resizeTerminal(session.id, size);
+      try {
+        void resizeTerminal(session.id, size).catch(() => {});
+      } catch {
+        // The browser-only preview has no Wails runtime.
+      }
     };
 
     const inputDisposable = terminal.onData((data) => {
-      void writeTerminal(session.id, data);
+      try {
+        void writeTerminal(session.id, data).catch(() => {});
+      } catch {
+        // The browser-only preview has no Wails runtime.
+      }
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -97,7 +130,7 @@ export function TerminalPane({ session, terminalBuffer, onTerminalSizeChange }: 
       lastWrittenBufferRef.current = "";
       terminal.dispose();
     };
-  }, [session?.id]);
+  }, [session?.id, themeMode]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

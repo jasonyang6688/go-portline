@@ -28,6 +28,34 @@ CREATE TABLE IF NOT EXISTS connections (
 	tags_json TEXT NOT NULL DEFAULT '[]',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS command_history (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	connection_id TEXT NOT NULL,
+	connection_name TEXT NOT NULL,
+	command TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_history_connection_created
+ON command_history(connection_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS saved_commands (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	command TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	tags_json TEXT NOT NULL DEFAULT '[]',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+	key TEXT PRIMARY KEY,
+	value_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL
 );`
 
 type Store struct {
@@ -141,6 +169,222 @@ func (s *Store) DeleteConnection(id string) error {
 	return nil
 }
 
+func (s *Store) SaveCommandHistory(input domain.SaveCommandHistoryInput) (domain.CommandHistoryEntry, error) {
+	command := strings.TrimSpace(input.Command)
+	if command == "" {
+		return domain.CommandHistoryEntry{}, errors.New("command is required")
+	}
+	if strings.TrimSpace(input.SessionID) == "" {
+		return domain.CommandHistoryEntry{}, errors.New("session id is required")
+	}
+	if strings.TrimSpace(input.ConnectionID) == "" {
+		return domain.CommandHistoryEntry{}, errors.New("connection id is required")
+	}
+
+	id, err := newID()
+	if err != nil {
+		return domain.CommandHistoryEntry{}, err
+	}
+	now := time.Now().UTC()
+	entry := domain.CommandHistoryEntry{
+		ID:             id,
+		SessionID:      strings.TrimSpace(input.SessionID),
+		ConnectionID:   strings.TrimSpace(input.ConnectionID),
+		ConnectionName: strings.TrimSpace(input.ConnectionName),
+		Command:        command,
+		CreatedAt:      now,
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO command_history (id,session_id,connection_id,connection_name,command,created_at) VALUES (?,?,?,?,?,?)`,
+		entry.ID, entry.SessionID, entry.ConnectionID, entry.ConnectionName, entry.Command, entry.CreatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return domain.CommandHistoryEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *Store) ListCommandHistory(filter domain.CommandHistoryFilter) ([]domain.CommandHistoryEntry, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	query := `SELECT id,session_id,connection_id,connection_name,command,created_at FROM command_history`
+	var where []string
+	var args []any
+	if strings.TrimSpace(filter.ConnectionID) != "" {
+		where = append(where, "connection_id=?")
+		args = append(args, strings.TrimSpace(filter.ConnectionID))
+	}
+	if strings.TrimSpace(filter.SessionID) != "" {
+		where = append(where, "session_id=?")
+		args = append(args, strings.TrimSpace(filter.SessionID))
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.CommandHistoryEntry
+	for rows.Next() {
+		entry, err := scanCommandHistory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ClearCommandHistory(connectionID string) error {
+	_, err := s.db.Exec(`DELETE FROM command_history WHERE connection_id=?`, strings.TrimSpace(connectionID))
+	return err
+}
+
+func (s *Store) ListSavedCommands() ([]domain.SavedCommand, error) {
+	rows, err := s.db.Query(`SELECT id,name,command,description,tags_json,created_at,updated_at FROM saved_commands ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.SavedCommand
+	for rows.Next() {
+		command, err := scanSavedCommand(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, command)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SaveSavedCommand(input domain.SaveSavedCommandInput) (domain.SavedCommand, error) {
+	if strings.TrimSpace(input.Name) == "" {
+		return domain.SavedCommand{}, errors.New("command name is required")
+	}
+	if strings.TrimSpace(input.Command) == "" {
+		return domain.SavedCommand{}, errors.New("command is required")
+	}
+
+	now := time.Now().UTC()
+	id := strings.TrimSpace(input.ID)
+	isCreate := id == ""
+	if isCreate {
+		generatedID, err := newID()
+		if err != nil {
+			return domain.SavedCommand{}, err
+		}
+		id = generatedID
+	}
+	tagsValue := input.Tags
+	if tagsValue == nil {
+		tagsValue = []string{}
+	}
+	tags, err := json.Marshal(tagsValue)
+	if err != nil {
+		return domain.SavedCommand{}, err
+	}
+
+	if isCreate {
+		_, err = s.db.Exec(
+			`INSERT INTO saved_commands (id,name,command,description,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`,
+			id,
+			strings.TrimSpace(input.Name),
+			strings.TrimSpace(input.Command),
+			strings.TrimSpace(input.Description),
+			string(tags),
+			now.Format(time.RFC3339Nano),
+			now.Format(time.RFC3339Nano),
+		)
+	} else {
+		var res sql.Result
+		res, err = s.db.Exec(
+			`UPDATE saved_commands SET name=?,command=?,description=?,tags_json=?,updated_at=? WHERE id=?`,
+			strings.TrimSpace(input.Name),
+			strings.TrimSpace(input.Command),
+			strings.TrimSpace(input.Description),
+			string(tags),
+			now.Format(time.RFC3339Nano),
+			id,
+		)
+		if err == nil {
+			var affected int64
+			affected, err = res.RowsAffected()
+			if err == nil && affected == 0 {
+				err = sql.ErrNoRows
+			}
+		}
+	}
+	if err != nil {
+		return domain.SavedCommand{}, err
+	}
+	return s.getSavedCommand(id)
+}
+
+func (s *Store) DeleteSavedCommand(id string) error {
+	res, err := s.db.Exec(`DELETE FROM saved_commands WHERE id=?`, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) GetSettings() (domain.AppSettings, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value_json FROM settings WHERE key='app'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return defaultSettings(), nil
+	}
+	if err != nil {
+		return domain.AppSettings{}, err
+	}
+
+	var settings domain.AppSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return domain.AppSettings{}, err
+	}
+	return normalizeSettings(settings), nil
+}
+
+func (s *Store) SaveSettings(input domain.AppSettings) (domain.AppSettings, error) {
+	settings := normalizeSettings(input)
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return domain.AppSettings{}, err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO settings (key,value_json,updated_at) VALUES ('app',?,?)
+		 ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at`,
+		string(raw),
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return domain.AppSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *Store) getSavedCommand(id string) (domain.SavedCommand, error) {
+	row := s.db.QueryRow(`SELECT id,name,command,description,tags_json,created_at,updated_at FROM saved_commands WHERE id=?`, id)
+	return scanSavedCommand(row)
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -168,6 +412,43 @@ func scanConnection(row scanner) (domain.Connection, error) {
 		return domain.Connection{}, err
 	}
 	return c, nil
+}
+
+func scanCommandHistory(row scanner) (domain.CommandHistoryEntry, error) {
+	var entry domain.CommandHistoryEntry
+	var created string
+	if err := row.Scan(&entry.ID, &entry.SessionID, &entry.ConnectionID, &entry.ConnectionName, &entry.Command, &created); err != nil {
+		return domain.CommandHistoryEntry{}, err
+	}
+	var err error
+	entry.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return domain.CommandHistoryEntry{}, err
+	}
+	return entry, nil
+}
+
+func scanSavedCommand(row scanner) (domain.SavedCommand, error) {
+	var command domain.SavedCommand
+	var tagsJSON string
+	var created string
+	var updated string
+	if err := row.Scan(&command.ID, &command.Name, &command.Command, &command.Description, &tagsJSON, &created, &updated); err != nil {
+		return domain.SavedCommand{}, err
+	}
+	if err := json.Unmarshal([]byte(tagsJSON), &command.Tags); err != nil {
+		return domain.SavedCommand{}, err
+	}
+	var err error
+	command.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return domain.SavedCommand{}, err
+	}
+	command.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return domain.SavedCommand{}, err
+	}
+	return command, nil
 }
 
 func validateConnection(input domain.SaveConnectionInput) error {
@@ -206,4 +487,43 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+func defaultSettings() domain.AppSettings {
+	return domain.AppSettings{
+		Theme:          "light",
+		Accent:         "#8aadf4",
+		FontSize:       13,
+		Ligatures:      true,
+		CopyOnSelect:   true,
+		SSHAgent:       true,
+		DefaultKeyPath: "~/.ssh/id_ed25519",
+		KnownHostsPath: "~/.ssh/known_hosts",
+	}
+}
+
+func normalizeSettings(input domain.AppSettings) domain.AppSettings {
+	defaults := defaultSettings()
+	if strings.TrimSpace(input.Theme) == "" {
+		input.Theme = defaults.Theme
+	}
+	if strings.TrimSpace(input.Accent) == "" {
+		input.Accent = defaults.Accent
+	}
+	if input.FontSize <= 0 {
+		input.FontSize = defaults.FontSize
+	}
+	if input.FontSize < 10 {
+		input.FontSize = 10
+	}
+	if input.FontSize > 24 {
+		input.FontSize = 24
+	}
+	if strings.TrimSpace(input.DefaultKeyPath) == "" {
+		input.DefaultKeyPath = defaults.DefaultKeyPath
+	}
+	if strings.TrimSpace(input.KnownHostsPath) == "" {
+		input.KnownHostsPath = defaults.KnownHostsPath
+	}
+	return input
 }

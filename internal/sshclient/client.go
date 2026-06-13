@@ -6,12 +6,15 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 	"termflow/internal/domain"
@@ -37,6 +40,15 @@ type TerminalSession interface {
 	Start(size domain.TerminalSize, onData func([]byte), onExit func(error)) error
 	Write(data string) error
 	Resize(size domain.TerminalSize) error
+	Run(command string) ([]byte, error)
+	ListFiles(path string) ([]domain.FileEntry, error)
+	ReadFile(path string) (domain.FileContent, error)
+	WriteFile(path string, content string) error
+	CreateFolder(path string) error
+	RenameFile(path string, newPath string) error
+	DeleteFile(path string) error
+	UploadFile(localPath string, remotePath string, overwrite bool) (int64, error)
+	DownloadFile(remotePath string, localPath string, overwrite bool) (int64, error)
 	Close() error
 }
 
@@ -198,6 +210,226 @@ func (s *realSession) Resize(size domain.TerminalSize) error {
 	return shell.WindowChange(size.Rows, size.Cols)
 }
 
+func (s *realSession) Run(command string) ([]byte, error) {
+	s.mu.Lock()
+	closed := s.closed
+	client := s.client
+	s.mu.Unlock()
+
+	if closed {
+		return nil, errors.New("terminal session is closed")
+	}
+	if client == nil {
+		return nil, errors.New("terminal session client is unavailable")
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	return session.CombinedOutput(command)
+}
+
+func (s *realSession) ListFiles(rawPath string) ([]domain.FileEntry, error) {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	cleanPath := cleanRemotePath(rawPath)
+	entries, err := client.ReadDir(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+
+	files := make([]domain.FileEntry, 0, len(entries))
+	for _, entry := range entries {
+		files = append(files, domain.FileEntry{
+			Name:      entry.Name(),
+			Path:      path.Join(cleanPath, entry.Name()),
+			Size:      entry.Size(),
+			SizeLabel: sizeLabel(entry.Size(), entry.IsDir()),
+			ModTime:   entry.ModTime().UTC(),
+			IsDir:     entry.IsDir(),
+		})
+	}
+	sortFileEntries(files)
+	return files, nil
+}
+
+func (s *realSession) ReadFile(rawPath string) (domain.FileContent, error) {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return domain.FileContent{}, err
+	}
+	defer client.Close()
+
+	cleanPath := cleanRemotePath(rawPath)
+	info, err := client.Stat(cleanPath)
+	if err != nil {
+		return domain.FileContent{}, err
+	}
+	if info.IsDir() {
+		return domain.FileContent{}, errors.New("cannot read a folder")
+	}
+
+	file, err := client.Open(cleanPath)
+	if err != nil {
+		return domain.FileContent{}, err
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return domain.FileContent{}, err
+	}
+	return domain.FileContent{
+		Name:    path.Base(cleanPath),
+		Path:    cleanPath,
+		Content: string(data),
+		Size:    info.Size(),
+		ModTime: info.ModTime().UTC(),
+	}, nil
+}
+
+func (s *realSession) WriteFile(rawPath string, content string) error {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	cleanPath := cleanRemotePath(rawPath)
+	file, err := client.OpenFile(cleanPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = io.WriteString(file, content)
+	return err
+}
+
+func (s *realSession) CreateFolder(rawPath string) error {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	return client.MkdirAll(cleanRemotePath(rawPath))
+}
+
+func (s *realSession) RenameFile(rawPath string, newRawPath string) error {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	return client.Rename(cleanRemotePath(rawPath), cleanRemotePath(newRawPath))
+}
+
+func (s *realSession) DeleteFile(rawPath string) error {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	cleanPath := cleanRemotePath(rawPath)
+	info, err := client.Stat(cleanPath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return client.Remove(cleanPath)
+	}
+	return removeRemoteDirectory(client, cleanPath)
+}
+
+func (s *realSession) UploadFile(localPath string, remotePath string, overwrite bool) (int64, error) {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close()
+
+	source, err := os.Open(strings.TrimSpace(localPath))
+	if err != nil {
+		return 0, err
+	}
+	defer source.Close()
+
+	info, err := source.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if info.IsDir() {
+		return 0, errors.New("cannot upload a folder")
+	}
+
+	cleanRemotePath := cleanRemotePath(remotePath)
+	if !overwrite {
+		if _, err := client.Stat(cleanRemotePath); err == nil {
+			return 0, errors.New("remote file already exists")
+		} else if !os.IsNotExist(err) {
+			return 0, err
+		}
+	}
+
+	destination, err := client.OpenFile(cleanRemotePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY)
+	if err != nil {
+		return 0, err
+	}
+	defer destination.Close()
+
+	return io.Copy(destination, source)
+}
+
+func (s *realSession) DownloadFile(remotePath string, localPath string, overwrite bool) (int64, error) {
+	client, err := s.newSFTPClient()
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close()
+
+	cleanRemotePath := cleanRemotePath(remotePath)
+	source, err := client.Open(cleanRemotePath)
+	if err != nil {
+		return 0, err
+	}
+	defer source.Close()
+
+	info, err := source.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if info.IsDir() {
+		return 0, errors.New("cannot download a folder")
+	}
+
+	cleanLocalPath := strings.TrimSpace(localPath)
+	if !overwrite {
+		if _, err := os.Stat(cleanLocalPath); err == nil {
+			return 0, errors.New("local file already exists")
+		} else if !os.IsNotExist(err) {
+			return 0, err
+		}
+	}
+
+	destination, err := os.OpenFile(cleanLocalPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer destination.Close()
+
+	return io.Copy(destination, source)
+}
+
 func (s *realSession) Close() error {
 	s.mu.Lock()
 	shell := s.shell
@@ -216,6 +448,88 @@ func (s *realSession) Close() error {
 	}
 
 	return nil
+}
+
+func (s *realSession) newSFTPClient() (*sftp.Client, error) {
+	s.mu.Lock()
+	closed := s.closed
+	client := s.client
+	s.mu.Unlock()
+
+	if closed {
+		return nil, errors.New("terminal session is closed")
+	}
+	if client == nil {
+		return nil, errors.New("terminal session client is unavailable")
+	}
+	return sftp.NewClient(client)
+}
+
+func cleanRemotePath(rawPath string) string {
+	cleaned := strings.TrimSpace(rawPath)
+	if cleaned == "" {
+		return "."
+	}
+	return path.Clean(cleaned)
+}
+
+func removeRemoteDirectory(client *sftp.Client, root string) error {
+	var files []string
+	var directories []string
+	walker := client.Walk(root)
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			return err
+		}
+		currentPath := walker.Path()
+		if currentPath == root {
+			continue
+		}
+		if walker.Stat().IsDir() {
+			directories = append(directories, currentPath)
+			continue
+		}
+		files = append(files, currentPath)
+	}
+
+	for _, file := range files {
+		if err := client.Remove(file); err != nil {
+			return err
+		}
+	}
+	for i := len(directories) - 1; i >= 0; i-- {
+		if err := client.RemoveDirectory(directories[i]); err != nil {
+			return err
+		}
+	}
+	return client.RemoveDirectory(root)
+}
+
+func sortFileEntries(files []domain.FileEntry) {
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].IsDir != files[j].IsDir {
+			return files[i].IsDir
+		}
+		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+	})
+}
+
+func sizeLabel(size int64, isDir bool) string {
+	if isDir {
+		return "folder"
+	}
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	value := float64(size) / 1024
+	for _, unit := range units {
+		if value < 1024 {
+			return fmt.Sprintf("%.1f %s", value, unit)
+		}
+		value /= 1024
+	}
+	return fmt.Sprintf("%.1f PB", value)
 }
 
 func buildClientConfig(req ConnectRequest) (*gossh.ClientConfig, error) {

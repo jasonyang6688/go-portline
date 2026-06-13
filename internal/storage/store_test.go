@@ -172,6 +172,148 @@ func TestSaveConnectionUpdateMissingIDReturnsError(t *testing.T) {
 	}
 }
 
+func TestCommandHistoryCRUD(t *testing.T) {
+	store := newTestStore(t)
+
+	first, err := store.SaveCommandHistory(domain.SaveCommandHistoryInput{
+		SessionID:      "s1",
+		ConnectionID:   "c1",
+		ConnectionName: "prod-01",
+		Command:        "  uptime  ",
+	})
+	if err != nil {
+		t.Fatalf("SaveCommandHistory(first) error = %v", err)
+	}
+	second, err := store.SaveCommandHistory(domain.SaveCommandHistoryInput{
+		SessionID:      "s1",
+		ConnectionID:   "c1",
+		ConnectionName: "prod-01",
+		Command:        "df -h",
+	})
+	if err != nil {
+		t.Fatalf("SaveCommandHistory(second) error = %v", err)
+	}
+	if first.ID == "" || second.ID == "" || first.ID == second.ID {
+		t.Fatalf("history IDs = (%q, %q), want distinct non-empty IDs", first.ID, second.ID)
+	}
+	if first.Command != "uptime" {
+		t.Fatalf("first command = %q, want trimmed uptime", first.Command)
+	}
+
+	history, err := store.ListCommandHistory(domain.CommandHistoryFilter{ConnectionID: "c1", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListCommandHistory() error = %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history length = %d, want 2", len(history))
+	}
+	if history[0].Command != "df -h" || history[1].Command != "uptime" {
+		t.Fatalf("history order = %#v, want newest first", history)
+	}
+
+	if err := store.ClearCommandHistory("c1"); err != nil {
+		t.Fatalf("ClearCommandHistory() error = %v", err)
+	}
+	history, err = store.ListCommandHistory(domain.CommandHistoryFilter{ConnectionID: "c1", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListCommandHistory(after clear) error = %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("history length after clear = %d, want 0", len(history))
+	}
+}
+
+func TestSavedCommandCRUD(t *testing.T) {
+	store := newTestStore(t)
+
+	saved, err := store.SaveSavedCommand(domain.SaveSavedCommandInput{
+		Name:        "Check disk",
+		Command:     "df -h",
+		Description: "Show disk usage",
+		Tags:        []string{"global", "server"},
+	})
+	if err != nil {
+		t.Fatalf("SaveSavedCommand(create) error = %v", err)
+	}
+	if saved.ID == "" {
+		t.Fatal("SaveSavedCommand(create) ID is empty")
+	}
+	if !reflect.DeepEqual(saved.Tags, []string{"global", "server"}) {
+		t.Fatalf("saved tags = %#v, want global/server", saved.Tags)
+	}
+
+	updated, err := store.SaveSavedCommand(domain.SaveSavedCommandInput{
+		ID:          saved.ID,
+		Name:        "Check filesystem",
+		Command:     "df -hT",
+		Description: "Show disk usage with filesystem type",
+		Tags:        []string{"global"},
+	})
+	if err != nil {
+		t.Fatalf("SaveSavedCommand(update) error = %v", err)
+	}
+	if updated.ID != saved.ID || updated.Name != "Check filesystem" || updated.Command != "df -hT" {
+		t.Fatalf("updated command = %#v, want same ID and changed fields", updated)
+	}
+
+	commands, err := store.ListSavedCommands()
+	if err != nil {
+		t.Fatalf("ListSavedCommands() error = %v", err)
+	}
+	if len(commands) != 1 || commands[0].Name != "Check filesystem" {
+		t.Fatalf("commands = %#v, want updated command", commands)
+	}
+
+	if err := store.DeleteSavedCommand(saved.ID); err != nil {
+		t.Fatalf("DeleteSavedCommand() error = %v", err)
+	}
+	commands, err = store.ListSavedCommands()
+	if err != nil {
+		t.Fatalf("ListSavedCommands(after delete) error = %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("commands length after delete = %d, want 0", len(commands))
+	}
+}
+
+func TestSettingsRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+
+	defaults, err := store.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings(defaults) error = %v", err)
+	}
+	if defaults.Theme == "" || defaults.FontSize == 0 || defaults.DefaultKeyPath == "" {
+		t.Fatalf("default settings = %#v, want populated defaults", defaults)
+	}
+
+	saved, err := store.SaveSettings(domain.AppSettings{
+		Theme:          "dark",
+		Accent:         "#8aadf4",
+		FontSize:       15,
+		Transparency:   true,
+		Ligatures:      false,
+		CopyOnSelect:   true,
+		SSHAgent:       true,
+		DefaultKeyPath: "~/.ssh/custom",
+		KnownHostsPath: "~/.ssh/known_hosts",
+	})
+	if err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+	if saved.Theme != "dark" || saved.FontSize != 15 || !saved.Transparency {
+		t.Fatalf("saved settings = %#v, want requested settings", saved)
+	}
+
+	got, err := store.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings(saved) error = %v", err)
+	}
+	if got != saved {
+		t.Fatalf("GetSettings() = %#v, want %#v", got, saved)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 

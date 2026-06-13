@@ -1,7 +1,23 @@
 import type {
   Connection,
+  AppSettings,
+  CommandHistoryEntry,
+  CommandHistoryFilter,
+  FileContent,
+  FileEntry,
+  FileListInput,
+  FileMutationInput,
+  FileReadInput,
+  FileRenameInput,
+  FileSaveInput,
+  FileTransferInput,
+  FileTransferResult,
+  MonitorSnapshot,
   OpenSessionInput,
+  RunCommandInput,
+  SaveSavedCommandInput,
   SaveConnectionInput,
+  SavedCommand,
   Session,
   TerminalSize,
   TestConnectionInput,
@@ -25,6 +41,22 @@ type WailsAppApi = {
   CloseSession(sessionId: string): Promise<void>;
   WriteTerminal(sessionId: string, data: string): Promise<void>;
   ResizeTerminal(sessionId: string, size: TerminalSize): Promise<void>;
+  RunCommand(input: RunCommandInput): Promise<void>;
+  ListCommandHistory(filter: CommandHistoryFilter): Promise<CommandHistoryEntry[]>;
+  ClearCommandHistory(connectionId: string): Promise<void>;
+  ListSavedCommands(): Promise<SavedCommand[]>;
+  SaveSavedCommand(input: SaveSavedCommandInput): Promise<SavedCommand>;
+  DeleteSavedCommand(id: string): Promise<void>;
+  GetSettings(): Promise<AppSettings>;
+  SaveSettings(input: AppSettings): Promise<AppSettings>;
+  ListFiles(input: FileListInput): Promise<FileEntry[]>;
+  ReadFile(input: FileReadInput): Promise<FileContent>;
+  SaveFile(input: FileSaveInput): Promise<void>;
+  CreateFolder(input: FileMutationInput): Promise<void>;
+  RenameFile(input: FileRenameInput): Promise<void>;
+  DeleteFile(input: FileMutationInput): Promise<void>;
+  TransferFile(input: FileTransferInput): Promise<FileTransferResult>;
+  GetMonitorSnapshot(sessionId: string): Promise<MonitorSnapshot>;
 };
 
 declare global {
@@ -76,6 +108,70 @@ export function writeTerminal(sessionId: string, data: string): Promise<void> {
 
 export function resizeTerminal(sessionId: string, size: TerminalSize): Promise<void> {
   return appApi().ResizeTerminal(sessionId, size);
+}
+
+export function runCommand(input: RunCommandInput): Promise<void> {
+  return appApi().RunCommand(input);
+}
+
+export function listCommandHistory(filter: CommandHistoryFilter): Promise<CommandHistoryEntry[]> {
+  return appApi().ListCommandHistory(filter);
+}
+
+export function clearCommandHistory(connectionId: string): Promise<void> {
+  return appApi().ClearCommandHistory(connectionId);
+}
+
+export function listSavedCommands(): Promise<SavedCommand[]> {
+  return appApi().ListSavedCommands();
+}
+
+export function saveSavedCommand(input: SaveSavedCommandInput): Promise<SavedCommand> {
+  return appApi().SaveSavedCommand(input);
+}
+
+export function deleteSavedCommand(id: string): Promise<void> {
+  return appApi().DeleteSavedCommand(id);
+}
+
+export function getSettings(): Promise<AppSettings> {
+  return appApi().GetSettings();
+}
+
+export function saveSettings(input: AppSettings): Promise<AppSettings> {
+  return appApi().SaveSettings(input);
+}
+
+export function listFiles(input: FileListInput): Promise<FileEntry[]> {
+  return appApi().ListFiles(input);
+}
+
+export function readFile(input: FileReadInput): Promise<FileContent> {
+  return appApi().ReadFile(input);
+}
+
+export function saveFile(input: FileSaveInput): Promise<void> {
+  return appApi().SaveFile(input);
+}
+
+export function createFolder(input: FileMutationInput): Promise<void> {
+  return appApi().CreateFolder(input);
+}
+
+export function renameFile(input: FileRenameInput): Promise<void> {
+  return appApi().RenameFile(input);
+}
+
+export function deleteFile(input: FileMutationInput): Promise<void> {
+  return appApi().DeleteFile(input);
+}
+
+export function transferFile(input: FileTransferInput): Promise<FileTransferResult> {
+  return appApi().TransferFile(input);
+}
+
+export function getMonitorSnapshot(sessionId: string): Promise<MonitorSnapshot> {
+  return appApi().GetMonitorSnapshot(sessionId);
 }
 
 export function onWailsEvent<T>(name: string, callback: (data: T) => void): () => void {
