@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"termflow/internal/appsvc"
 	"termflow/internal/domain"
 	"termflow/internal/sessions"
@@ -95,6 +98,10 @@ func (a *App) WriteTerminal(sessionID string, data string) error {
 	return a.service.WriteTerminal(sessionID, data)
 }
 
+func (a *App) RecordCommandHistory(sessionID string, command string) error {
+	return a.service.RecordCommandHistory(sessionID, command)
+}
+
 func (a *App) ResizeTerminal(sessionID string, size domain.TerminalSize) error {
 	return a.service.ResizeTerminal(sessionID, size)
 }
@@ -157,6 +164,52 @@ func (a *App) DeleteFile(input domain.FileMutationInput) error {
 
 func (a *App) TransferFile(input domain.FileTransferInput) (domain.FileTransferResult, error) {
 	return a.service.TransferFile(input)
+}
+
+func (a *App) SelectLocalFile() (string, error) {
+	if a == nil || a.ctx == nil {
+		return "", errors.New("app context is unavailable")
+	}
+	return wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select local file to upload",
+	})
+}
+
+func (a *App) SelectLocalFiles() ([]string, error) {
+	if a == nil || a.ctx == nil {
+		return nil, errors.New("app context is unavailable")
+	}
+	return wailsruntime.OpenMultipleFilesDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select local files to upload",
+	})
+}
+
+func (a *App) SelectLocalDirectory(title string) (string, error) {
+	if a == nil || a.ctx == nil {
+		return "", errors.New("app context is unavailable")
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "Select local folder"
+	}
+	return wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title:                title,
+		CanCreateDirectories: true,
+	})
+}
+
+func (a *App) SelectSaveFile(defaultFilename string) (string, error) {
+	if a == nil || a.ctx == nil {
+		return "", errors.New("app context is unavailable")
+	}
+	filename := filepath.Base(defaultFilename)
+	if filename == "." || filename == string(filepath.Separator) {
+		filename = "download"
+	}
+	return wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+		Title:                "Save downloaded file",
+		DefaultFilename:      filename,
+		CanCreateDirectories: true,
+	})
 }
 
 func (a *App) GetMonitorSnapshot(sessionID string) (domain.MonitorSnapshot, error) {

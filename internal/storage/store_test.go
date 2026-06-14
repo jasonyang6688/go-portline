@@ -14,14 +14,16 @@ func TestConnectionCRUD(t *testing.T) {
 	store := newTestStore(t)
 
 	saved, err := store.SaveConnection(domain.SaveConnectionInput{
-		Name:     "prod-01",
-		Host:     "10.0.1.100",
-		Port:     22,
-		Username: "root",
-		AuthType: domain.AuthKey,
-		KeyPath:  "/Users/test/.ssh/id_ed25519",
-		Group:    "Production",
-		Tags:     []string{"prod", "linux"},
+		Name:                  "prod-01",
+		Host:                  "10.0.1.100",
+		Port:                  22,
+		Username:              "root",
+		AuthType:              domain.AuthKey,
+		Password:              "secret",
+		KeyPath:               "/Users/test/.ssh/id_ed25519",
+		InsecureIgnoreHostKey: true,
+		Group:                 "Production",
+		Tags:                  []string{"prod", "linux"},
 	})
 	if err != nil {
 		t.Fatalf("SaveConnection() error = %v", err)
@@ -37,6 +39,12 @@ func TestConnectionCRUD(t *testing.T) {
 	}
 	if !reflect.DeepEqual(saved.Tags, []string{"prod", "linux"}) {
 		t.Fatalf("SaveConnection() tags = %#v, want %#v", saved.Tags, []string{"prod", "linux"})
+	}
+	if saved.Password != "secret" {
+		t.Fatalf("SaveConnection() password = %q, want secret", saved.Password)
+	}
+	if !saved.InsecureIgnoreHostKey {
+		t.Fatal("SaveConnection() insecure ignore host key = false, want true")
 	}
 
 	list, err := store.ListConnections()
@@ -54,13 +62,15 @@ func TestConnectionCRUD(t *testing.T) {
 	}
 
 	updated, err := store.SaveConnection(domain.SaveConnectionInput{
-		ID:       saved.ID,
-		Name:     "prod-main",
-		Host:     "10.0.1.100",
-		Port:     2222,
-		Username: "deploy",
-		AuthType: domain.AuthPassword,
-		Group:    "Production",
+		ID:                    saved.ID,
+		Name:                  "prod-main",
+		Host:                  "10.0.1.100",
+		Port:                  2222,
+		Username:              "deploy",
+		AuthType:              domain.AuthPassword,
+		Password:              "new-secret",
+		InsecureIgnoreHostKey: false,
+		Group:                 "Production",
 	})
 	if err != nil {
 		t.Fatalf("SaveConnection(update) error = %v", err)
@@ -78,6 +88,12 @@ func TestConnectionCRUD(t *testing.T) {
 	}
 	if got.Name != "prod-main" || got.Port != 2222 || got.Username != "deploy" {
 		t.Fatalf("GetConnection() = %+v, want updated values", got)
+	}
+	if got.Password != "new-secret" {
+		t.Fatalf("GetConnection() password = %q, want new-secret", got.Password)
+	}
+	if got.InsecureIgnoreHostKey {
+		t.Fatal("GetConnection() insecure ignore host key = true, want false after update")
 	}
 
 	if err := store.DeleteConnection(saved.ID); err != nil {

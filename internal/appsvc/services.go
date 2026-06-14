@@ -85,9 +85,9 @@ func (s *Service) OpenSession(input domain.OpenSessionInput) (domain.Session, er
 
 	return s.registry.Open(sessions.OpenRequest{
 		Connection:            conn,
-		Password:              input.Password,
+		Password:              firstNonEmpty(input.Password, conn.Password),
 		Size:                  input.Size,
-		InsecureIgnoreHostKey: input.InsecureIgnoreHostKey,
+		InsecureIgnoreHostKey: input.InsecureIgnoreHostKey || conn.InsecureIgnoreHostKey,
 	})
 }
 
@@ -103,6 +103,30 @@ func (s *Service) WriteTerminal(sessionID string, data string) error {
 		return errRegistryUnavailable
 	}
 	return s.registry.Write(sessionID, data)
+}
+
+func (s *Service) RecordCommandHistory(sessionID string, command string) error {
+	if s == nil || s.registry == nil {
+		return errRegistryUnavailable
+	}
+	if s.store == nil {
+		return errStoreUnavailable
+	}
+	trimmedCommand := strings.TrimSpace(command)
+	if trimmedCommand == "" {
+		return nil
+	}
+	session, err := s.registry.Snapshot(strings.TrimSpace(sessionID))
+	if err != nil {
+		return err
+	}
+	_, err = s.store.SaveCommandHistory(domain.SaveCommandHistoryInput{
+		SessionID:      session.ID,
+		ConnectionID:   session.ConnectionID,
+		ConnectionName: session.Name,
+		Command:        trimmedCommand,
+	})
+	return err
 }
 
 func (s *Service) ResizeTerminal(sessionID string, size domain.TerminalSize) error {
@@ -415,9 +439,9 @@ func (s *Service) connectRequest(input domain.TestConnectionInput) (sshclient.Co
 			Port:                  conn.Port,
 			Username:              strings.TrimSpace(conn.Username),
 			AuthType:              conn.AuthType,
-			Password:              input.Password,
+			Password:              firstNonEmpty(input.Password, conn.Password),
 			KeyPath:               strings.TrimSpace(conn.KeyPath),
-			InsecureIgnoreHostKey: input.InsecureIgnoreHostKey,
+			InsecureIgnoreHostKey: input.InsecureIgnoreHostKey || conn.InsecureIgnoreHostKey,
 		}, nil
 	}
 
@@ -435,6 +459,15 @@ func (s *Service) connectRequest(input domain.TestConnectionInput) (sshclient.Co
 		KeyPath:               strings.TrimSpace(input.KeyPath),
 		InsecureIgnoreHostKey: input.InsecureIgnoreHostKey,
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func seedDefaultCommands(store *storage.Store) ([]domain.SavedCommand, error) {

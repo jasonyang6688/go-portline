@@ -216,6 +216,71 @@ func TestOpenSessionForwardsInsecureHostKeyFlag(t *testing.T) {
 	}
 }
 
+func TestOpenSessionUsesStoredPasswordWhenInputPasswordEmpty(t *testing.T) {
+	store := newTestStore(t)
+	storedPassword := "stored-test-password"
+	conn, err := store.SaveConnection(domain.SaveConnectionInput{
+		Name:     "stored-password",
+		Host:     "stored.example.com",
+		Port:     22,
+		Username: "deploy",
+		AuthType: domain.AuthPassword,
+		Password: storedPassword,
+		Group:    "SSH Servers",
+	})
+	if err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+
+	runner := &fakeRunner{session: &fakeTerminalSession{}}
+	registry := sessions.NewRegistry(runner, nil)
+	service := NewService(store, registry, runner)
+
+	if _, err := service.OpenSession(domain.OpenSessionInput{
+		ConnectionID:          conn.ID,
+		InsecureIgnoreHostKey: true,
+	}); err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+	if len(runner.connectReqs) != 1 {
+		t.Fatalf("runner Connect calls = %d, want 1", len(runner.connectReqs))
+	}
+	if runner.connectReqs[0].Password != storedPassword {
+		t.Fatalf("Connect password = %q, want %q", runner.connectReqs[0].Password, storedPassword)
+	}
+}
+
+func TestOpenSessionUsesStoredInsecureHostKeyFlag(t *testing.T) {
+	store := newTestStore(t)
+	conn, err := store.SaveConnection(domain.SaveConnectionInput{
+		Name:                  "trusted-host",
+		Host:                  "trusted.example.com",
+		Port:                  22,
+		Username:              "deploy",
+		AuthType:              domain.AuthPassword,
+		Password:              "secret",
+		InsecureIgnoreHostKey: true,
+		Group:                 "SSH Servers",
+	})
+	if err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+
+	runner := &fakeRunner{session: &fakeTerminalSession{}}
+	registry := sessions.NewRegistry(runner, nil)
+	service := NewService(store, registry, runner)
+
+	if _, err := service.OpenSession(domain.OpenSessionInput{ConnectionID: conn.ID}); err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+	if len(runner.connectReqs) != 1 {
+		t.Fatalf("runner Connect calls = %d, want 1", len(runner.connectReqs))
+	}
+	if !runner.connectReqs[0].InsecureIgnoreHostKey {
+		t.Fatalf("Connect request = %#v, want saved insecure host key flag", runner.connectReqs[0])
+	}
+}
+
 func TestRunCommandWritesTerminalAndRecordsHistory(t *testing.T) {
 	store := newTestStore(t)
 	conn := saveTestConnection(t, store)
@@ -245,6 +310,35 @@ func TestRunCommandWritesTerminalAndRecordsHistory(t *testing.T) {
 	}
 	if len(history) != 1 || history[0].Command != "uptime" || history[0].SessionID != session.ID {
 		t.Fatalf("history = %#v, want recorded uptime for session", history)
+	}
+}
+
+func TestRecordCommandHistoryUsesSessionConnection(t *testing.T) {
+	store := newTestStore(t)
+	conn := saveTestConnection(t, store)
+	term := &fakeTerminalSession{}
+	runner := &fakeRunner{session: term}
+	registry := sessions.NewRegistry(runner, nil)
+	service := NewService(store, registry, runner)
+	session, err := service.OpenSession(domain.OpenSessionInput{
+		ConnectionID:          conn.ID,
+		Password:              "secret",
+		InsecureIgnoreHostKey: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+
+	if err := service.RecordCommandHistory(session.ID, "  whoami  "); err != nil {
+		t.Fatalf("RecordCommandHistory() error = %v", err)
+	}
+
+	history, err := service.ListCommandHistory(domain.CommandHistoryFilter{ConnectionID: conn.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListCommandHistory() error = %v", err)
+	}
+	if len(history) != 1 || history[0].Command != "whoami" || history[0].ConnectionName != session.Name {
+		t.Fatalf("history = %#v, want recorded whoami for session connection", history)
 	}
 }
 

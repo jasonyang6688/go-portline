@@ -58,6 +58,10 @@ export function ReadFile(arg1) {
   return window['go']['main']['App']['ReadFile'](arg1);
 }
 
+export function RecordCommandHistory(arg1, arg2) {
+  return window['go']['main']['App']['RecordCommandHistory'](arg1, arg2);
+}
+
 export function RenameFile(arg1) {
   return window['go']['main']['App']['RenameFile'](arg1);
 }
@@ -84,6 +88,22 @@ export function SaveSavedCommand(arg1) {
 
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
+}
+
+export function SelectLocalDirectory(arg1) {
+  return window['go']['main']['App']['SelectLocalDirectory'](arg1);
+}
+
+export function SelectLocalFile() {
+  return window['go']['main']['App']['SelectLocalFile']();
+}
+
+export function SelectLocalFiles() {
+  return window['go']['main']['App']['SelectLocalFiles']();
+}
+
+export function SelectSaveFile(arg1) {
+  return window['go']['main']['App']['SelectSaveFile'](arg1);
 }
 
 export function TestConnection(arg1) {

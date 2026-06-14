@@ -9,7 +9,9 @@ export interface Connection {
   port: number;
   username: string;
   authType: AuthType;
+  password: string;
   keyPath: string;
+  insecureIgnoreHostKey: boolean;
   group: string;
   tags: string[];
   createdAt: string;
@@ -23,7 +25,9 @@ export interface SaveConnectionInput {
   port: number;
   username: string;
   authType: AuthType;
+  password: string;
   keyPath: string;
+  insecureIgnoreHostKey: boolean;
   group: string;
   tags: string[];
 }

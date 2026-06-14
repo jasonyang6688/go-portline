@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { resizeTerminal, writeTerminal } from "../../shared/api/wails";
@@ -8,12 +8,19 @@ interface Props {
   session: Session | null;
   terminalBuffer: string;
   themeMode: "dark" | "light";
+  layoutKey?: string;
   onTerminalSizeChange?(size: TerminalSize): void;
+  onFullscreenChange?(sessionId: string, fullscreen: boolean): void;
+  onCommandCommit?(command: string): void;
 }
 
 const DARK_TERMINAL_THEME = {
   background: "#0b0d14",
   foreground: "#cad3f5",
+  cursor: "#f4dbd6",
+  cursorAccent: "#0b0d14",
+  selectionBackground: "#3b4261",
+  selectionForeground: "#f4dbd6",
   black: "#181926",
   red: "#ed8796",
   green: "#a6da95",
@@ -35,6 +42,10 @@ const DARK_TERMINAL_THEME = {
 const LIGHT_TERMINAL_THEME = {
   background: "#eff1f5",
   foreground: "#5c5f77",
+  cursor: "#1e66f5",
+  cursorAccent: "#ffffff",
+  selectionBackground: "#1e66f5",
+  selectionForeground: "#ffffff",
   black: "#5c5f77",
   red: "#d20f39",
   green: "#40a02b",
@@ -53,16 +64,34 @@ const LIGHT_TERMINAL_THEME = {
   brightWhite: "#4c4f69",
 };
 
-export function TerminalPane({ session, terminalBuffer, themeMode, onTerminalSizeChange }: Props) {
+export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, onTerminalSizeChange, onFullscreenChange, onCommandCommit }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const lastSentSizeRef = useRef<TerminalSize | null>(null);
   const lastWrittenBufferRef = useRef("");
   const sizeChangeRef = useRef<Props["onTerminalSizeChange"]>(onTerminalSizeChange);
+  const fullscreenChangeRef = useRef<Props["onFullscreenChange"]>(onFullscreenChange);
+  const commandCommitRef = useRef<Props["onCommandCommit"]>(onCommandCommit);
+  const fullscreenRef = useRef(false);
+  const pendingCommandRef = useRef("");
+  const scheduleFitRef = useRef<(() => void) | null>(null);
+  const fitAfterLayoutRef = useRef<(() => void) | null>(null);
+
+  const focusTerminal = useCallback(() => {
+    terminalRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     sizeChangeRef.current = onTerminalSizeChange;
   }, [onTerminalSizeChange]);
+
+  useEffect(() => {
+    fullscreenChangeRef.current = onFullscreenChange;
+  }, [onFullscreenChange]);
+
+  useEffect(() => {
+    commandCommitRef.current = onCommandCommit;
+  }, [onCommandCommit]);
 
   useEffect(() => {
     if (!session || !hostRef.current) {
@@ -86,6 +115,24 @@ export function TerminalPane({ session, terminalBuffer, themeMode, onTerminalSiz
     terminalRef.current = terminal;
     lastSentSizeRef.current = null;
     lastWrittenBufferRef.current = "";
+    fullscreenRef.current = false;
+    pendingCommandRef.current = "";
+    let fitFrameId: number | null = null;
+
+    const syncFullscreenState = () => {
+      const fullscreen = terminal.buffer.active.type === "alternate";
+      if (fullscreenRef.current === fullscreen) {
+        return;
+      }
+      fullscreenRef.current = fullscreen;
+      fullscreenChangeRef.current?.(session.id, fullscreen);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          syncTerminalSize();
+          terminal.focus();
+        });
+      });
+    };
 
     const syncTerminalSize = () => {
       fitAddon.fit();
@@ -106,31 +153,96 @@ export function TerminalPane({ session, terminalBuffer, themeMode, onTerminalSiz
       }
     };
 
+    const scheduleTerminalFit = () => {
+      if (fitFrameId !== null) {
+        return;
+      }
+      fitFrameId = window.requestAnimationFrame(() => {
+        fitFrameId = null;
+        syncTerminalSize();
+      });
+    };
+    scheduleFitRef.current = scheduleTerminalFit;
+    fitAfterLayoutRef.current = () => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          syncTerminalSize();
+          terminal.focus();
+        });
+      });
+    };
+
     const inputDisposable = terminal.onData((data) => {
+      if (!fullscreenRef.current && !data.startsWith("\u001b")) {
+        for (const char of data) {
+          if (char === "\r" || char === "\n") {
+            const command = pendingCommandRef.current.trim();
+            pendingCommandRef.current = "";
+            if (command) {
+              commandCommitRef.current?.(command);
+            }
+            continue;
+          }
+          if (char === "\u0003") {
+            pendingCommandRef.current = "";
+            continue;
+          }
+          if (char === "\u007f" || char === "\b") {
+            pendingCommandRef.current = pendingCommandRef.current.slice(0, -1);
+            continue;
+          }
+          if (char === "\u0015") {
+            pendingCommandRef.current = "";
+            continue;
+          }
+          if (char >= " ") {
+            pendingCommandRef.current += char;
+          }
+        }
+      }
       try {
         void writeTerminal(session.id, data).catch(() => {});
       } catch {
         // The browser-only preview has no Wails runtime.
       }
     });
+    const writeParsedDisposable = terminal.onWriteParsed(syncFullscreenState);
 
     const resizeObserver = new ResizeObserver(() => {
-      syncTerminalSize();
+      scheduleTerminalFit();
     });
     resizeObserver.observe(hostRef.current);
 
-    const frameId = window.requestAnimationFrame(syncTerminalSize);
+    scheduleTerminalFit();
+    const settledFrameId = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(syncTerminalSize);
+    });
 
     return () => {
-      window.cancelAnimationFrame(frameId);
+      if (fitFrameId !== null) {
+        window.cancelAnimationFrame(fitFrameId);
+      }
+      window.cancelAnimationFrame(settledFrameId);
       resizeObserver.disconnect();
       inputDisposable.dispose();
+      writeParsedDisposable.dispose();
+      if (fullscreenRef.current) {
+        fullscreenChangeRef.current?.(session.id, false);
+      }
       terminalRef.current = null;
       lastSentSizeRef.current = null;
       lastWrittenBufferRef.current = "";
+      fullscreenRef.current = false;
+      pendingCommandRef.current = "";
+      scheduleFitRef.current = null;
+      fitAfterLayoutRef.current = null;
       terminal.dispose();
     };
   }, [session?.id, themeMode]);
+
+  useEffect(() => {
+    fitAfterLayoutRef.current?.();
+  }, [layoutKey]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -144,10 +256,14 @@ export function TerminalPane({ session, terminalBuffer, themeMode, onTerminalSiz
     }
 
     if (terminalBuffer.startsWith(previousBuffer)) {
-      terminal.write(terminalBuffer.slice(previousBuffer.length));
+      terminal.write(terminalBuffer.slice(previousBuffer.length), () => {
+        scheduleFitRef.current?.();
+      });
     } else {
       terminal.reset();
-      terminal.write(terminalBuffer);
+      terminal.write(terminalBuffer, () => {
+        scheduleFitRef.current?.();
+      });
     }
     lastWrittenBufferRef.current = terminalBuffer;
   }, [session, terminalBuffer]);
@@ -161,5 +277,5 @@ export function TerminalPane({ session, terminalBuffer, themeMode, onTerminalSiz
     );
   }
 
-  return <div className="terminal-canvas" ref={hostRef} />;
+  return <div className="terminal-canvas" ref={hostRef} onPointerDown={focusTerminal} />;
 }

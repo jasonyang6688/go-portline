@@ -40,6 +40,7 @@ type WailsAppApi = {
   OpenSession(input: OpenSessionInput): Promise<Session>;
   CloseSession(sessionId: string): Promise<void>;
   WriteTerminal(sessionId: string, data: string): Promise<void>;
+  RecordCommandHistory(sessionId: string, command: string): Promise<void>;
   ResizeTerminal(sessionId: string, size: TerminalSize): Promise<void>;
   RunCommand(input: RunCommandInput): Promise<void>;
   ListCommandHistory(filter: CommandHistoryFilter): Promise<CommandHistoryEntry[]>;
@@ -56,6 +57,10 @@ type WailsAppApi = {
   RenameFile(input: FileRenameInput): Promise<void>;
   DeleteFile(input: FileMutationInput): Promise<void>;
   TransferFile(input: FileTransferInput): Promise<FileTransferResult>;
+  SelectLocalFile(): Promise<string>;
+  SelectLocalFiles(): Promise<string[]>;
+  SelectLocalDirectory(title: string): Promise<string>;
+  SelectSaveFile(defaultFilename: string): Promise<string>;
   GetMonitorSnapshot(sessionId: string): Promise<MonitorSnapshot>;
 };
 
@@ -104,6 +109,10 @@ export function closeSession(sessionId: string): Promise<void> {
 
 export function writeTerminal(sessionId: string, data: string): Promise<void> {
   return appApi().WriteTerminal(sessionId, data);
+}
+
+export function recordCommandHistory(sessionId: string, command: string): Promise<void> {
+  return appApi().RecordCommandHistory(sessionId, command);
 }
 
 export function resizeTerminal(sessionId: string, size: TerminalSize): Promise<void> {
@@ -168,6 +177,22 @@ export function deleteFile(input: FileMutationInput): Promise<void> {
 
 export function transferFile(input: FileTransferInput): Promise<FileTransferResult> {
   return appApi().TransferFile(input);
+}
+
+export function selectLocalFile(): Promise<string> {
+  return appApi().SelectLocalFile();
+}
+
+export function selectLocalFiles(): Promise<string[]> {
+  return appApi().SelectLocalFiles();
+}
+
+export function selectLocalDirectory(title: string): Promise<string> {
+  return appApi().SelectLocalDirectory(title);
+}
+
+export function selectSaveFile(defaultFilename: string): Promise<string> {
+  return appApi().SelectSaveFile(defaultFilename);
 }
 
 export function getMonitorSnapshot(sessionId: string): Promise<MonitorSnapshot> {

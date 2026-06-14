@@ -7,6 +7,38 @@ interface Props {
   onSave(input: SaveConnectionInput): Promise<void>;
 }
 
+function EyeIcon({ visible }: { visible: boolean }) {
+  const common = {
+    width: 15,
+    height: 15,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (visible) {
+    return (
+      <svg {...common}>
+        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
+      <path d="M9.5 5.5A9.7 9.7 0 0 1 12 5c6.5 0 10 7 10 7a17.8 17.8 0 0 1-2.1 3.1" />
+      <path d="M6.6 6.6C3.6 8.5 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 4.8-1.3" />
+    </svg>
+  );
+}
+
 export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) {
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
@@ -15,8 +47,10 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
   const [authType, setAuthType] = useState<AuthType>("password");
   const [password, setPassword] = useState("");
   const [keyPath, setKeyPath] = useState("");
+  const [insecureIgnoreHostKey, setInsecureIgnoreHostKey] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [savePassword, setSavePassword] = useState(true);
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const isEditing = Boolean(initialConnection);
@@ -30,8 +64,10 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
       setAuthType("password");
       setPassword("");
       setKeyPath("");
+      setInsecureIgnoreHostKey(false);
       setPassphrase("");
       setSavePassword(true);
+      setPasswordVisible(false);
       setError("");
       return;
     }
@@ -41,10 +77,12 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
     setPort(initialConnection.port);
     setUsername(initialConnection.username);
     setAuthType(initialConnection.authType);
-    setPassword("");
+    setPassword(initialConnection.password);
     setKeyPath(initialConnection.keyPath);
+    setInsecureIgnoreHostKey(initialConnection.insecureIgnoreHostKey);
     setPassphrase("");
-    setSavePassword(true);
+    setSavePassword(initialConnection.password.trim() !== "");
+    setPasswordVisible(false);
     setError("");
   }, [initialConnection]);
 
@@ -64,7 +102,9 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
         port,
         username: username.trim() || "root",
         authType,
+        password: authType === "password" && savePassword ? password : "",
         keyPath: authType === "key" ? keyPath.trim() : "",
+        insecureIgnoreHostKey,
         group: initialConnection?.group ?? "SSH Servers",
         tags: initialConnection?.tags ?? [],
       });
@@ -106,6 +146,7 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
             <span className="field-label">Name / Label</span>
             <input
               className="field-input"
+              name="connection-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="prod-db-01"
@@ -117,6 +158,7 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
             <span className="field-label">Host</span>
             <input
               className="field-input"
+              name="connection-host"
               value={host}
               onChange={(event) => setHost(event.target.value)}
               placeholder="10.0.1.120 or db.example.com"
@@ -127,13 +169,22 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
           <div className="field-row">
             <label className="field field-grow-2">
               <span className="field-label">User</span>
-              <input className="field-input" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="root" required />
+              <input
+                className="field-input"
+                name="connection-username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="root"
+                autoComplete="username"
+                required
+              />
             </label>
 
             <label className="field">
               <span className="field-label">Port</span>
               <input
                 className="field-input"
+                name="connection-port"
                 type="number"
                 min={1}
                 max={65535}
@@ -168,21 +219,33 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
           {authType === "password" ? (
             <div className="field">
               <span className="field-label">Password</span>
-              <input
-                className="field-input"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder={isEditing ? "•••••••• (unchanged)" : "Account password"}
-                autoComplete="current-password"
-              />
+              <div className="secret-field">
+                <input
+                  className="field-input"
+                  name="connection-password"
+                  type={passwordVisible ? "text" : "password"}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Account password"
+                  autoComplete="current-password"
+                />
+                <button
+                  className="secret-toggle"
+                  type="button"
+                  onClick={() => setPasswordVisible((current) => !current)}
+                  aria-label={passwordVisible ? "Hide password" : "Show password"}
+                  title={passwordVisible ? "Hide password" : "Show password"}
+                >
+                  <EyeIcon visible={passwordVisible} />
+                </button>
+              </div>
               <label className="auth-check">
                 <input
                   type="checkbox"
                   checked={savePassword}
                   onChange={(event) => setSavePassword(event.target.checked)}
                 />
-                Save password to keychain
+                Remember password locally
               </label>
             </div>
           ) : null}
@@ -193,6 +256,7 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
                 <span className="field-label">Private key file</span>
                 <input
                   className="field-input"
+                  name="connection-key-path"
                   value={keyPath}
                   onChange={(event) => setKeyPath(event.target.value)}
                   placeholder="~/.ssh/id_ed25519"
@@ -205,6 +269,7 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
                 </span>
                 <input
                   className="field-input"
+                  name="connection-key-passphrase"
                   type="password"
                   value={passphrase}
                   onChange={(event) => setPassphrase(event.target.value)}
@@ -222,6 +287,15 @@ export function ConnectionModal({ initialConnection, onCancel, onSave }: Props) 
               </span>
             </div>
           ) : null}
+
+          <label className="auth-check host-key-check">
+            <input
+              type="checkbox"
+              checked={insecureIgnoreHostKey}
+              onChange={(event) => setInsecureIgnoreHostKey(event.target.checked)}
+            />
+            Trust this host without known_hosts verification
+          </label>
         </div>
 
         <footer className="modal-foot">

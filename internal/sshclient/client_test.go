@@ -269,6 +269,20 @@ func TestCopyOutputCopiesChunkData(t *testing.T) {
 	}
 }
 
+func TestRelativeRemotePathRejectsPrefixSiblings(t *testing.T) {
+	relativePath, err := relativeRemotePath("/srv/app", "/srv/app/assets/main.css")
+	if err != nil {
+		t.Fatalf("relativeRemotePath() error = %v", err)
+	}
+	if relativePath != "assets/main.css" {
+		t.Fatalf("relativePath = %q, want assets/main.css", relativePath)
+	}
+
+	if _, err := relativeRemotePath("/srv/app", "/srv/application/config.yml"); err == nil {
+		t.Fatal("relativeRemotePath() error = nil, want sibling prefix rejection")
+	}
+}
+
 type chunkReader struct {
 	chunks [][]byte
 	index  int

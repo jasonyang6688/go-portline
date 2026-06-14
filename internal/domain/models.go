@@ -29,29 +29,33 @@ const (
 )
 
 type Connection struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	Username  string    `json:"username"`
-	AuthType  AuthType  `json:"authType"`
-	KeyPath   string    `json:"keyPath"`
-	Group     string    `json:"group"`
-	Tags      []string  `json:"tags"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Host                  string    `json:"host"`
+	Port                  int       `json:"port"`
+	Username              string    `json:"username"`
+	AuthType              AuthType  `json:"authType"`
+	Password              string    `json:"password"`
+	KeyPath               string    `json:"keyPath"`
+	InsecureIgnoreHostKey bool      `json:"insecureIgnoreHostKey"`
+	Group                 string    `json:"group"`
+	Tags                  []string  `json:"tags"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
 }
 
 type SaveConnectionInput struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Host     string   `json:"host"`
-	Port     int      `json:"port"`
-	Username string   `json:"username"`
-	AuthType AuthType `json:"authType"`
-	KeyPath  string   `json:"keyPath"`
-	Group    string   `json:"group"`
-	Tags     []string `json:"tags"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	Host                  string   `json:"host"`
+	Port                  int      `json:"port"`
+	Username              string   `json:"username"`
+	AuthType              AuthType `json:"authType"`
+	Password              string   `json:"password"`
+	KeyPath               string   `json:"keyPath"`
+	InsecureIgnoreHostKey bool     `json:"insecureIgnoreHostKey"`
+	Group                 string   `json:"group"`
+	Tags                  []string `json:"tags"`
 }
 
 type TestConnectionInput struct {

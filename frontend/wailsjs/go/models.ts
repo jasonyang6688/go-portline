@@ -92,7 +92,9 @@ export namespace domain {
 	    port: number;
 	    username: string;
 	    authType: string;
+	    password: string;
 	    keyPath: string;
+	    insecureIgnoreHostKey: boolean;
 	    group: string;
 	    tags: string[];
 	    // Go type: time
@@ -112,7 +114,9 @@ export namespace domain {
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.authType = source["authType"];
+	        this.password = source["password"];
 	        this.keyPath = source["keyPath"];
+	        this.insecureIgnoreHostKey = source["insecureIgnoreHostKey"];
 	        this.group = source["group"];
 	        this.tags = source["tags"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
@@ -480,7 +484,9 @@ export namespace domain {
 	    port: number;
 	    username: string;
 	    authType: string;
+	    password: string;
 	    keyPath: string;
+	    insecureIgnoreHostKey: boolean;
 	    group: string;
 	    tags: string[];
 	
@@ -496,7 +502,9 @@ export namespace domain {
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.authType = source["authType"];
+	        this.password = source["password"];
 	        this.keyPath = source["keyPath"];
+	        this.insecureIgnoreHostKey = source["insecureIgnoreHostKey"];
 	        this.group = source["group"];
 	        this.tags = source["tags"];
 	    }

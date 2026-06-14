@@ -10,6 +10,7 @@ interface Props {
   onEdit(connection: Connection): void;
   onDelete(connection: Connection): void;
   onOpen(connection: Connection, password: string, insecureIgnoreHostKey: boolean): Promise<void> | void;
+  onTrustHostKey(connection: Connection): Promise<void> | void;
   onRefresh?(): void;
 }
 
@@ -92,6 +93,7 @@ export function ConnectionSidebar({
   onEdit,
   onDelete,
   onOpen,
+  onTrustHostKey,
   onRefresh,
 }: Props) {
   const [search, setSearch] = useState("");
@@ -119,7 +121,7 @@ export function ConnectionSidebar({
     setErrorById((current) => ({ ...current, [connection.id]: "" }));
 
     try {
-      await onOpen(connection, "", false);
+      await onOpen(connection, connection.password, false);
     } catch (error) {
       setErrorById((current) => ({
         ...current,
@@ -128,6 +130,30 @@ export function ConnectionSidebar({
     } finally {
       setOpeningId((current) => (current === connection.id ? null : current));
     }
+  }
+
+  async function handleTrustHostKey(connection: Connection) {
+    setOpeningId(connection.id);
+    setErrorById((current) => ({ ...current, [connection.id]: "" }));
+
+    try {
+      await onTrustHostKey(connection);
+    } catch (error) {
+      setErrorById((current) => ({
+        ...current,
+        [connection.id]: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setOpeningId((current) => (current === connection.id ? null : current));
+    }
+  }
+
+  function canTrustHostKey(error: string | undefined, connection: Connection): boolean {
+    if (!error || connection.insecureIgnoreHostKey) {
+      return false;
+    }
+    const message = error.toLowerCase();
+    return message.includes("knownhosts") || message.includes("known_hosts") || message.includes("key is unknown");
   }
 
   return (
@@ -226,7 +252,20 @@ export function ConnectionSidebar({
                     <div className="sb-conn-meta">
                       <span>{connection.username}@{connection.host}:{connection.port}</span>
                     </div>
-                    {error ? <div className="tf-error">{error}</div> : null}
+                    {error ? (
+                      <div className="tf-error sb-error">
+                        <span>{error}</span>
+                        {canTrustHostKey(error, connection) ? (
+                          <button
+                            className="sb-error-action"
+                            type="button"
+                            onClick={() => void handleTrustHostKey(connection)}
+                          >
+                            Trust & retry
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

@@ -368,17 +368,20 @@ func (s *realSession) UploadFile(localPath string, remotePath string, overwrite 
 	if err != nil {
 		return 0, err
 	}
-	if info.IsDir() {
-		return 0, errors.New("cannot upload a folder")
-	}
 
 	cleanRemotePath := cleanRemotePath(remotePath)
+	if info.IsDir() {
+		return uploadLocalDirectory(client, strings.TrimSpace(localPath), cleanRemotePath, overwrite)
+	}
 	if !overwrite {
 		if _, err := client.Stat(cleanRemotePath); err == nil {
 			return 0, errors.New("remote file already exists")
 		} else if !os.IsNotExist(err) {
 			return 0, err
 		}
+	}
+	if err := client.MkdirAll(path.Dir(cleanRemotePath)); err != nil {
+		return 0, err
 	}
 
 	destination, err := client.OpenFile(cleanRemotePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY)
@@ -408,17 +411,20 @@ func (s *realSession) DownloadFile(remotePath string, localPath string, overwrit
 	if err != nil {
 		return 0, err
 	}
-	if info.IsDir() {
-		return 0, errors.New("cannot download a folder")
-	}
 
 	cleanLocalPath := strings.TrimSpace(localPath)
+	if info.IsDir() {
+		return downloadRemoteDirectory(client, cleanRemotePath, cleanLocalPath, overwrite)
+	}
 	if !overwrite {
 		if _, err := os.Stat(cleanLocalPath); err == nil {
 			return 0, errors.New("local file already exists")
 		} else if !os.IsNotExist(err) {
 			return 0, err
 		}
+	}
+	if err := os.MkdirAll(filepath.Dir(cleanLocalPath), 0o755); err != nil {
+		return 0, err
 	}
 
 	destination, err := os.OpenFile(cleanLocalPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
@@ -503,6 +509,140 @@ func removeRemoteDirectory(client *sftp.Client, root string) error {
 		}
 	}
 	return client.RemoveDirectory(root)
+}
+
+func uploadLocalDirectory(client *sftp.Client, localRoot string, remoteRoot string, overwrite bool) (int64, error) {
+	if localRoot == "" {
+		return 0, errors.New("local path is required")
+	}
+	if !overwrite {
+		if _, err := client.Stat(remoteRoot); err == nil {
+			return 0, errors.New("remote folder already exists")
+		} else if !os.IsNotExist(err) {
+			return 0, err
+		}
+	}
+	if err := client.MkdirAll(remoteRoot); err != nil {
+		return 0, err
+	}
+
+	var bytesTransferred int64
+	err := filepath.WalkDir(localRoot, func(currentPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if currentPath == localRoot {
+			return nil
+		}
+		relativePath, err := filepath.Rel(localRoot, currentPath)
+		if err != nil {
+			return err
+		}
+		remotePath := path.Join(remoteRoot, filepath.ToSlash(relativePath))
+		if entry.IsDir() {
+			return client.MkdirAll(remotePath)
+		}
+
+		source, err := os.Open(currentPath)
+		if err != nil {
+			return err
+		}
+
+		if err := client.MkdirAll(path.Dir(remotePath)); err != nil {
+			_ = source.Close()
+			return err
+		}
+		destination, err := client.OpenFile(remotePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY)
+		if err != nil {
+			_ = source.Close()
+			return err
+		}
+
+		copied, err := io.Copy(destination, source)
+		closeErr := errors.Join(destination.Close(), source.Close())
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		bytesTransferred += copied
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return bytesTransferred, nil
+}
+
+func downloadRemoteDirectory(client *sftp.Client, remoteRoot string, localRoot string, overwrite bool) (int64, error) {
+	if strings.TrimSpace(localRoot) == "" {
+		return 0, errors.New("local path is required")
+	}
+	if !overwrite {
+		if _, err := os.Stat(localRoot); err == nil {
+			return 0, errors.New("local folder already exists")
+		} else if !os.IsNotExist(err) {
+			return 0, err
+		}
+	}
+	if err := os.MkdirAll(localRoot, 0o755); err != nil {
+		return 0, err
+	}
+
+	var bytesTransferred int64
+	walker := client.Walk(remoteRoot)
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			return 0, err
+		}
+		currentPath := walker.Path()
+		if currentPath == remoteRoot {
+			continue
+		}
+		relativePath, err := relativeRemotePath(remoteRoot, currentPath)
+		if err != nil {
+			return 0, err
+		}
+		localPath := filepath.Join(localRoot, filepath.FromSlash(relativePath))
+		if walker.Stat().IsDir() {
+			if err := os.MkdirAll(localPath, 0o755); err != nil {
+				return 0, err
+			}
+			continue
+		}
+
+		source, err := client.Open(currentPath)
+		if err != nil {
+			return 0, err
+		}
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+			_ = source.Close()
+			return 0, err
+		}
+		destination, err := os.OpenFile(localPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			_ = source.Close()
+			return 0, err
+		}
+		copied, copyErr := io.Copy(destination, source)
+		closeErr := errors.Join(destination.Close(), source.Close())
+		if copyErr != nil {
+			return 0, copyErr
+		}
+		if closeErr != nil {
+			return 0, closeErr
+		}
+		bytesTransferred += copied
+	}
+	return bytesTransferred, nil
+}
+
+func relativeRemotePath(root string, currentPath string) (string, error) {
+	if currentPath == root || !strings.HasPrefix(currentPath, root+"/") {
+		return "", fmt.Errorf("remote path %q is outside %q", currentPath, root)
+	}
+	return strings.TrimPrefix(currentPath, root+"/"), nil
 }
 
 func sortFileEntries(files []domain.FileEntry) {

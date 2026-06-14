@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS connections (
 	port INTEGER NOT NULL,
 	username TEXT NOT NULL,
 	auth_type TEXT NOT NULL,
+	password TEXT NOT NULL DEFAULT '',
 	key_path TEXT NOT NULL DEFAULT '',
+	insecure_ignore_host_key INTEGER NOT NULL DEFAULT 0,
 	group_name TEXT NOT NULL DEFAULT '',
 	tags_json TEXT NOT NULL DEFAULT '[]',
 	created_at TEXT NOT NULL,
@@ -72,6 +74,14 @@ func New(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureConnectionPasswordColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureConnectionInsecureHostKeyColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -82,8 +92,50 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+func ensureConnectionPasswordColumn(db *sql.DB) error {
+	return ensureColumn(db, "password", `ALTER TABLE connections ADD COLUMN password TEXT NOT NULL DEFAULT ''`)
+}
+
+func ensureConnectionInsecureHostKeyColumn(db *sql.DB) error {
+	return ensureColumn(db, "insecure_ignore_host_key", `ALTER TABLE connections ADD COLUMN insecure_ignore_host_key INTEGER NOT NULL DEFAULT 0`)
+}
+
+func ensureColumn(db *sql.DB, columnName string, alterSQL string) error {
+	rows, err := db.Query(`PRAGMA table_info(connections)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	hasColumn := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == columnName {
+			hasColumn = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec(alterSQL)
+	return err
+}
+
 func (s *Store) ListConnections() ([]domain.Connection, error) {
-	rows, err := s.db.Query(`SELECT id,name,host,port,username,auth_type,key_path,group_name,tags_json,created_at,updated_at FROM connections ORDER BY group_name, name`)
+	rows, err := s.db.Query(`SELECT id,name,host,port,username,auth_type,password,key_path,insecure_ignore_host_key,group_name,tags_json,created_at,updated_at FROM connections ORDER BY group_name, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +153,7 @@ func (s *Store) ListConnections() ([]domain.Connection, error) {
 }
 
 func (s *Store) GetConnection(id string) (domain.Connection, error) {
-	row := s.db.QueryRow(`SELECT id,name,host,port,username,auth_type,key_path,group_name,tags_json,created_at,updated_at FROM connections WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id,name,host,port,username,auth_type,password,key_path,insecure_ignore_host_key,group_name,tags_json,created_at,updated_at FROM connections WHERE id=?`, id)
 	return scanConnection(row)
 }
 
@@ -131,14 +183,14 @@ func (s *Store) SaveConnection(input domain.SaveConnectionInput) (domain.Connect
 
 	if isCreate {
 		_, err = s.db.Exec(
-			`INSERT INTO connections (id,name,host,port,username,auth_type,key_path,group_name,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			id, input.Name, input.Host, normalizedPort(input.Port), input.Username, normalizedAuth(input.AuthType), input.KeyPath, input.Group, string(tags), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+			`INSERT INTO connections (id,name,host,port,username,auth_type,password,key_path,insecure_ignore_host_key,group_name,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, input.Name, input.Host, normalizedPort(input.Port), input.Username, normalizedAuth(input.AuthType), input.Password, input.KeyPath, boolToInt(input.InsecureIgnoreHostKey), input.Group, string(tags), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 		)
 	} else {
 		var res sql.Result
 		res, err = s.db.Exec(
-			`UPDATE connections SET name=?,host=?,port=?,username=?,auth_type=?,key_path=?,group_name=?,tags_json=?,updated_at=? WHERE id=?`,
-			input.Name, input.Host, normalizedPort(input.Port), input.Username, normalizedAuth(input.AuthType), input.KeyPath, input.Group, string(tags), now.Format(time.RFC3339Nano), id,
+			`UPDATE connections SET name=?,host=?,port=?,username=?,auth_type=?,password=?,key_path=?,insecure_ignore_host_key=?,group_name=?,tags_json=?,updated_at=? WHERE id=?`,
+			input.Name, input.Host, normalizedPort(input.Port), input.Username, normalizedAuth(input.AuthType), input.Password, input.KeyPath, boolToInt(input.InsecureIgnoreHostKey), input.Group, string(tags), now.Format(time.RFC3339Nano), id,
 		)
 		if err == nil {
 			var affected int64
@@ -392,13 +444,15 @@ type scanner interface {
 func scanConnection(row scanner) (domain.Connection, error) {
 	var c domain.Connection
 	var auth string
+	var insecureIgnoreHostKey int
 	var tagsJSON string
 	var created string
 	var updated string
-	if err := row.Scan(&c.ID, &c.Name, &c.Host, &c.Port, &c.Username, &auth, &c.KeyPath, &c.Group, &tagsJSON, &created, &updated); err != nil {
+	if err := row.Scan(&c.ID, &c.Name, &c.Host, &c.Port, &c.Username, &auth, &c.Password, &c.KeyPath, &insecureIgnoreHostKey, &c.Group, &tagsJSON, &created, &updated); err != nil {
 		return domain.Connection{}, err
 	}
 	c.AuthType = domain.AuthType(auth)
+	c.InsecureIgnoreHostKey = insecureIgnoreHostKey != 0
 	if err := json.Unmarshal([]byte(tagsJSON), &c.Tags); err != nil {
 		return domain.Connection{}, err
 	}
@@ -479,6 +533,13 @@ func normalizedAuth(auth domain.AuthType) domain.AuthType {
 		return domain.AuthPassword
 	}
 	return auth
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func newID() (string, error) {

@@ -30,6 +30,8 @@ export function OpenSession(arg1:domain.OpenSessionInput):Promise<domain.Session
 
 export function ReadFile(arg1:domain.FileReadInput):Promise<domain.FileContent>;
 
+export function RecordCommandHistory(arg1:string,arg2:string):Promise<void>;
+
 export function RenameFile(arg1:domain.FileRenameInput):Promise<void>;
 
 export function ResizeTerminal(arg1:string,arg2:domain.TerminalSize):Promise<void>;
@@ -43,6 +45,14 @@ export function SaveFile(arg1:domain.FileSaveInput):Promise<void>;
 export function SaveSavedCommand(arg1:domain.SaveSavedCommandInput):Promise<domain.SavedCommand>;
 
 export function SaveSettings(arg1:domain.AppSettings):Promise<domain.AppSettings>;
+
+export function SelectLocalDirectory(arg1:string):Promise<string>;
+
+export function SelectLocalFile():Promise<string>;
+
+export function SelectLocalFiles():Promise<Array<string>>;
+
+export function SelectSaveFile(arg1:string):Promise<string>;
 
 export function TestConnection(arg1:domain.TestConnectionInput):Promise<void>;
 

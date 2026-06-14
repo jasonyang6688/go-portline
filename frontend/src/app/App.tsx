@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ConnectionSidebar } from "../features/connections/ConnectionSidebar";
 import { ConnectionModal } from "../features/connections/ConnectionModal";
 import { StatusBar } from "../features/status/StatusBar";
@@ -18,13 +19,19 @@ import {
   listSavedCommands,
   onWailsEvent,
   readFile,
+  recordCommandHistory,
   renameFile,
   runCommand,
   saveConnection,
   saveFile,
   saveSavedCommand,
   saveSettings,
+  selectLocalFile,
+  selectLocalDirectory,
+  selectLocalFiles,
+  selectSaveFile,
   transferFile,
+  writeTerminal,
 } from "../shared/api/wails";
 import type {
   AppSettings,
@@ -66,6 +73,7 @@ function sortConnections(connections: Connection[]): Connection[] {
 }
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = { cols: 120, rows: 32 };
+const DEFAULT_REMOTE_PATH = "/home/ubuntu";
 const MAX_TERMINAL_BUFFER_LENGTH = 200_000;
 const DEMO_NOW = new Date().toISOString();
 const DEMO_CONNECTIONS: Connection[] = [
@@ -76,7 +84,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "root",
     authType: "password",
+    password: "demo",
     keyPath: "",
+    insecureIgnoreHostKey: false,
     group: "SSH Servers",
     tags: ["prod"],
     createdAt: DEMO_NOW,
@@ -89,7 +99,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "deploy",
     authType: "key",
+    password: "",
     keyPath: "~/.ssh/id_ed25519",
+    insecureIgnoreHostKey: false,
     group: "SSH Servers",
     tags: ["staging"],
     createdAt: DEMO_NOW,
@@ -102,7 +114,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "ubuntu",
     authType: "agent",
+    password: "",
     keyPath: "",
+    insecureIgnoreHostKey: false,
     group: "SSH Servers",
     tags: [],
     createdAt: DEMO_NOW,
@@ -115,7 +129,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "backup",
     authType: "agent",
+    password: "",
     keyPath: "",
+    insecureIgnoreHostKey: false,
     group: "SSH Servers",
     tags: [],
     createdAt: DEMO_NOW,
@@ -128,7 +144,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "root",
     authType: "key",
+    password: "",
     keyPath: "~/.ssh/id_ed25519",
+    insecureIgnoreHostKey: false,
     group: "SSH Servers",
     tags: ["load"],
     createdAt: DEMO_NOW,
@@ -141,7 +159,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "jason",
     authType: "agent",
+    password: "",
     keyPath: "",
+    insecureIgnoreHostKey: false,
     group: "WSL",
     tags: ["wsl"],
     createdAt: DEMO_NOW,
@@ -154,7 +174,9 @@ const DEMO_CONNECTIONS: Connection[] = [
     port: 22,
     username: "debian",
     authType: "agent",
+    password: "",
     keyPath: "",
+    insecureIgnoreHostKey: false,
     group: "WSL",
     tags: ["wsl"],
     createdAt: DEMO_NOW,
@@ -519,6 +541,20 @@ function terminalUser(connection: Connection | null): string {
   return connection?.username || "root";
 }
 
+function defaultRemotePath(connection: Connection | null): string {
+  const username = connection?.username.trim();
+  if (!username) {
+    return DEFAULT_REMOTE_PATH;
+  }
+  if (username === "root") {
+    return "/root";
+  }
+  if (username.includes("/")) {
+    return DEFAULT_REMOTE_PATH;
+  }
+  return `/home/${username}`;
+}
+
 function terminalHost(connection: Connection | null, session: Session | null): string {
   return connection?.host || session?.name || "prod-01";
 }
@@ -534,7 +570,7 @@ function terminalPath(connection: Connection | null): string {
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
+  return `'${value.split("'").join("'\\''")}'`;
 }
 
 function parentPath(path: string): string {
@@ -549,8 +585,78 @@ function parentPath(path: string): string {
   return trimmed.slice(0, index);
 }
 
+function pathSegments(path: string): Array<{ label: string; path: string }> {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length === 0) {
+    return [{ label: "/", path: "/" }];
+  }
+  return parts.map((part, index) => ({
+    label: `${index === 0 ? "/" : "›"} ${part}`,
+    path: `/${parts.slice(0, index + 1).join("/")}`,
+  }));
+}
+
 function joinPath(base: string, name: string): string {
   return `${base.replace(/\/+$/, "")}/${name.replace(/^\/+/, "")}`;
+}
+
+function baseName(path: string): string {
+  return path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
+}
+
+function normalizeRemotePath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed || trimmed === "/") {
+    return "/";
+  }
+  return `/${trimmed.split("/").filter(Boolean).join("/")}`;
+}
+
+const CWD_SYNC_OSC_PREFIX = "\u001b]6973;TermFlowCwd=";
+const CWD_SYNC_OSC_SUFFIX = "\u0007";
+const CWD_SYNC_COMMAND = `printf '\\033]6973;TermFlowCwd=%s\\007' "$PWD"\r`;
+const CWD_SYNC_ECHO = `printf '\\033]6973;TermFlowCwd=%s\\007' "$PWD"`;
+
+function extractSyncedWorkingDirectory(output: string): string | null {
+  const start = output.lastIndexOf(CWD_SYNC_OSC_PREFIX);
+  if (start < 0) {
+    return null;
+  }
+  const valueStart = start + CWD_SYNC_OSC_PREFIX.length;
+  const end = output.indexOf(CWD_SYNC_OSC_SUFFIX, valueStart);
+  if (end < 0) {
+    return null;
+  }
+  const path = output.slice(valueStart, end).trim();
+  if (!path.startsWith("/")) {
+    return null;
+  }
+  return normalizeRemotePath(path);
+}
+
+function cleanCwdSyncOutput(output: string): string {
+  let cleaned = output.split(CWD_SYNC_ECHO).join("");
+  for (;;) {
+    const start = cleaned.indexOf(CWD_SYNC_OSC_PREFIX);
+    if (start < 0) {
+      break;
+    }
+    const end = cleaned.indexOf(CWD_SYNC_OSC_SUFFIX, start + CWD_SYNC_OSC_PREFIX.length);
+    if (end < 0) {
+      cleaned = cleaned.slice(0, start);
+      break;
+    }
+    cleaned = `${cleaned.slice(0, start)}${cleaned.slice(end + CWD_SYNC_OSC_SUFFIX.length)}`;
+  }
+  return cleaned.replace(/^\r?\n/, "");
+}
+
+function demoDir(basePath: string, name: string): BackendFileEntry {
+  return { name, path: joinPath(basePath, name), size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true };
+}
+
+function demoFile(basePath: string, name: string, size: number): BackendFileEntry {
+  return { name, path: joinPath(basePath, name), size, sizeLabel: formatBytes(size), modTime: DEMO_NOW, isDir: false };
 }
 
 const DEMO_LOCAL_FILES: BackendFileEntry[] = [
@@ -561,13 +667,53 @@ const DEMO_LOCAL_FILES: BackendFileEntry[] = [
   { name: "go.mod", path: "/Projects/go-termflow/go.mod", size: 612, sizeLabel: "612 B", modTime: DEMO_NOW, isDir: false },
 ];
 
-const DEMO_REMOTE_FILES: BackendFileEntry[] = [
-  { name: "app", path: "/var/www/app", size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true },
-  { name: "html", path: "/var/www/html", size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true },
-  { name: "static", path: "/var/www/static", size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true },
-  { name: "nginx.conf", path: "/var/www/nginx.conf", size: 2100, sizeLabel: "2.1 KB", modTime: DEMO_NOW, isDir: false },
-  { name: "deploy.sh", path: "/var/www/deploy.sh", size: 2400, sizeLabel: "2.4 KB", modTime: DEMO_NOW, isDir: false },
-];
+const DEMO_REMOTE_TREE: Record<string, BackendFileEntry[]> = {
+  "/home/ubuntu": [
+    demoDir("/home/ubuntu", "apps"),
+    demoDir("/home/ubuntu", "logs"),
+    demoFile("/home/ubuntu", "README.md", 1200),
+    demoFile("/home/ubuntu", "deploy.sh", 2400),
+  ],
+  "/home/ubuntu/apps": [
+    demoDir("/home/ubuntu/apps", "termflow"),
+    demoFile("/home/ubuntu/apps", "package.json", 3200),
+  ],
+  "/home/ubuntu/logs": [
+    demoFile("/home/ubuntu/logs", "app.log", 16_400),
+  ],
+  "/var/www": [
+    demoDir("/var/www", "app"),
+    demoDir("/var/www", "html"),
+    demoDir("/var/www", "static"),
+    demoFile("/var/www", "nginx.conf", 2100),
+    demoFile("/var/www", "deploy.sh", 2400),
+  ],
+  "/var/www/app": [
+    demoDir("/var/www/app", "releases"),
+    demoDir("/var/www/app", "shared"),
+    demoFile("/var/www/app", "ecosystem.config.js", 1800),
+    demoFile("/var/www/app", "package.json", 3200),
+  ],
+  "/var/www/html": [
+    demoDir("/var/www/html", "assets"),
+    demoFile("/var/www/html", "index.html", 5100),
+    demoFile("/var/www/html", "robots.txt", 64),
+  ],
+  "/var/www/html/assets": [
+    demoFile("/var/www/html/assets", "app.css", 7800),
+    demoFile("/var/www/html/assets", "app.js", 42_000),
+  ],
+  "/var/www/static": [
+    demoDir("/var/www/static", "img"),
+    demoFile("/var/www/static", "manifest.json", 740),
+  ],
+};
+
+const DEMO_REMOTE_FILES: BackendFileEntry[] = DEMO_REMOTE_TREE[DEFAULT_REMOTE_PATH];
+
+function demoRemoteFilesForPath(path: string): BackendFileEntry[] {
+  return DEMO_REMOTE_TREE[normalizeRemotePath(path)] ?? [];
+}
 
 type TransferRecord = {
   id: string;
@@ -576,6 +722,7 @@ type TransferRecord = {
   detail: string;
   status: "running" | "done" | "failed";
   bytes?: number;
+  completedAt?: string;
 };
 
 type FileEditorState = {
@@ -631,6 +778,12 @@ const TERMINAL_ALERTS = [
 ] as const;
 
 type TerminalDock = "monitor" | "files" | "history" | null;
+type CommandHistoryScope = "host" | "all";
+type PendingCwdSync = {
+  sessionId: string;
+  output: string;
+  timeoutId: number;
+};
 
 const MONITOR_CPU_HISTORY = [72, 75, 76, 77, 78, 79, 80, 80, 79, 78, 76, 74, 78, 81, 82, 83, 84, 83, 82, 85, 86, 87, 86, 84, 82, 80, 78, 76];
 const MONITOR_NET_HISTORY = [24, 8, 25, 24, 16, 4, 7, 5, 11, 24, 9, 7, 22, 15, 26, 14, 28, 31, 27, 18, 17, 10, 21, 8, 5, 17, 31, 36];
@@ -696,6 +849,18 @@ function MiniGauge({ value, label, sub, color }: { value: number; label: string;
   );
 }
 
+function metricTone(value: number) {
+  if (value >= 85) return "critical";
+  if (value >= 60) return "warn";
+  return "ok";
+}
+
+function metricColor(value: number) {
+  if (value >= 85) return "var(--red)";
+  if (value >= 60) return "var(--yellow)";
+  return "var(--green)";
+}
+
 function TerminalMonitorDock({
   host,
   user,
@@ -733,9 +898,9 @@ function TerminalMonitorDock({
       <div className="tm-host">{user}@{host}</div>
       <div className="tm-scroll">
         <div className="tm-gauges">
-          <MiniGauge value={cpu} label="CPU" sub={snapshot?.loadAverage ?? "live"} color={cpu > 85 ? "var(--red)" : "var(--yellow)"} />
-          <MiniGauge value={mem} label="MEM" sub="usage" color={mem > 85 ? "var(--red)" : "var(--green)"} />
-          <MiniGauge value={disk} label="DISK" sub="/ volume" color={disk > 85 ? "var(--red)" : "var(--peach)"} />
+          <MiniGauge value={cpu} label="CPU" sub={snapshot?.loadAverage ?? "live"} color={metricColor(cpu)} />
+          <MiniGauge value={mem} label="MEM" sub="usage" color={metricColor(mem)} />
+          <MiniGauge value={disk} label="DISK" sub="/ volume" color={metricColor(disk)} />
         </div>
         <section className="tm-chart">
           <div className="tm-chart-head"><Icon name="cpu" size={12} />CPU<span>{cpu}%</span></div>
@@ -772,66 +937,194 @@ function TerminalMonitorDock({
 function TerminalFilesDock({
   files,
   path,
+  hasSession,
+  transfers,
   onRunCommand,
+  onOpenFolder,
+  onOpenPath,
   onRefresh,
+  onUpload,
+  onUploadFolder,
+  onNewFile,
+  onNewFolder,
   onTransfer,
   onEdit,
   onDelete,
+  onDismissTransfer,
+  onClearFinishedTransfers,
   onClose,
 }: {
   files: BackendFileEntry[];
   path: string;
+  hasSession: boolean;
+  transfers: TransferRecord[];
   onRunCommand(command: string): void;
+  onOpenFolder(entry: BackendFileEntry): void;
+  onOpenPath(path: string): void;
   onRefresh(): void;
+  onUpload(): void;
+  onUploadFolder(): void;
+  onNewFile(): void;
+  onNewFolder(): void;
   onTransfer(entry: BackendFileEntry): void;
   onEdit(entry: BackendFileEntry): void;
   onDelete(entry: BackendFileEntry): void;
+  onDismissTransfer(id: string): void;
+  onClearFinishedTransfers(): void;
   onClose(): void;
 }) {
-  const shownFiles = files.length > 0 ? files : DEMO_REMOTE_FILES;
+  const openEntry = (entry: BackendFileEntry) => {
+    if (entry.isDir) {
+      onOpenFolder(entry);
+      return;
+    }
+    onEdit(entry);
+  };
+  const [pathDraft, setPathDraft] = useState(path);
+
+  useEffect(() => {
+    setPathDraft(path);
+  }, [path]);
+
+  const handlePathSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextPath = pathDraft.trim();
+    if (!nextPath) {
+      setPathDraft(path);
+      return;
+    }
+    onOpenPath(nextPath);
+  };
+
+  const handleEntryKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>, entry: BackendFileEntry) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    openEntry(entry);
+  };
+
   return (
     <aside className="term-files" aria-label="Files panel">
       <div className="tf-head">
         <span className="tf-head-title"><Icon name="files" size={13} />Files</span>
         <span className="tf-head-spacer" />
         <button className="tf-sync" type="button" onClick={onRefresh}><Icon name="link" size={12} />Synced</button>
-        <button className="tf-icon-btn" type="button" title="Upload" onClick={() => shownFiles[0] && onTransfer(shownFiles[0])}><Icon name="upload" size={13} /></button>
+        <button className="tf-icon-btn" type="button" title="Go up" onClick={() => onOpenPath(parentPath(path))}>↑</button>
+        <button className="tf-icon-btn" type="button" title="New file" onClick={onNewFile}><Icon name="file" size={13} /></button>
+        <button className="tf-icon-btn" type="button" title="New folder" onClick={onNewFolder}><Icon name="files" size={13} /></button>
+        <button className="tf-icon-btn" type="button" title="Upload local file" onClick={onUpload}><Icon name="upload" size={13} /></button>
+        <button className="tf-icon-btn" type="button" title="Upload local folder" onClick={onUploadFolder}><Icon name="files" size={13} /></button>
         <button className="tf-icon-btn" type="button" title="Close panel" onClick={onClose}><Icon name="close" size={13} /></button>
       </div>
+      <form className="tf-path-edit" onSubmit={handlePathSubmit}>
+        <input
+          aria-label="Remote path"
+          value={pathDraft}
+          onChange={(event) => setPathDraft(event.target.value)}
+        />
+        <button className="tf-go" type="submit">Go</button>
+      </form>
       <div className="tf-path">
-        {path.split("/").filter(Boolean).map((part, index) => (
-          <span className="tf-path-seg" key={`${part}-${index}`}>{index === 0 ? "/" : "›"} {part}</span>
+        {pathSegments(path).map((segment) => (
+          <button className="tf-path-seg" type="button" key={segment.path} onClick={() => onOpenPath(segment.path)}>
+            {segment.label}
+          </button>
         ))}
       </div>
       <div className="tf-list">
-        {shownFiles.slice(0, 12).map((file, index) => (
-          <div className={`tf-row${index === 0 ? " selected" : ""}${file.isDir ? " dir" : ""}`} key={file.path}>
+        {files.length === 0 ? (
+          <div className="tf-empty">
+            {hasSession ? "No files found at this path." : "Open an SSH session to browse remote files."}
+          </div>
+        ) : null}
+        {files.map((file, index) => (
+          <div
+            aria-label={`${file.isDir ? "Open folder" : "Edit file"} ${file.name}`}
+            className={`tf-row${index === 0 ? " selected" : ""}${file.isDir ? " dir" : ""}`}
+            key={file.path}
+            onClick={() => openEntry(file)}
+            onKeyDown={(event) => handleEntryKeyDown(event, file)}
+            role="button"
+            tabIndex={0}
+            title={file.isDir ? `Open ${file.path}` : `Edit ${file.path}`}
+          >
             <span className="tf-row-icon">{file.isDir ? "🗂" : "📄"}</span>
             <span className="tf-row-name">{file.name}</span>
             <span className="tf-row-size">{file.sizeLabel}</span>
             <span className="tf-actions">
               {file.isDir ? (
-                <button className="tf-act" type="button" title="cd here" onClick={() => onRunCommand(`cd ${shellQuote(file.path)}`)}>
-                  <Icon name="terminal" size={11} />
+                <button className="tf-act" type="button" title="Open folder" onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenFolder(file);
+                }}>
+                  <Icon name="files" size={11} />
                 </button>
               ) : (
-                <button className="tf-act" type="button" title="Edit" onClick={() => onEdit(file)}>
+                <button className="tf-act" type="button" title="Edit" onClick={(event) => {
+                  event.stopPropagation();
+                  onEdit(file);
+                }}>
                   <Icon name="edit" size={11} />
                 </button>
               )}
-              <button className="tf-act" type="button" title="Download" onClick={() => onTransfer(file)}>
+              {file.isDir ? (
+                <button className="tf-act" type="button" title="cd here" onClick={(event) => {
+                  event.stopPropagation();
+                  onRunCommand(`cd ${shellQuote(file.path)}`);
+                }}>
+                  <Icon name="terminal" size={11} />
+                </button>
+              ) : null}
+              <button className="tf-act" type="button" title="Download" onClick={(event) => {
+                event.stopPropagation();
+                onTransfer(file);
+              }}>
                 <Icon name="download" size={11} />
               </button>
-              <button className="tf-act danger" type="button" title="Delete" onClick={() => onDelete(file)}>
+              <button className="tf-act danger" type="button" title="Delete" onClick={(event) => {
+                event.stopPropagation();
+                onDelete(file);
+              }}>
                 <Icon name="trash" size={11} />
               </button>
             </span>
           </div>
         ))}
       </div>
+      {transfers.length > 0 ? (
+        <div className="tf-xfer-stack" aria-label="File transfer progress">
+          <div className="tf-xfer-head">
+            <span>Transfer history</span>
+            <button className="tf-xfer-clear" type="button" onClick={onClearFinishedTransfers}>Clear done</button>
+          </div>
+          {transfers.map((transfer) => (
+            <div className={`tf-xfer-card ${transfer.status}`} key={transfer.id}>
+              <div className="tf-xfer-top">
+                <span className="tf-xfer-dir">
+                  <Icon name={transfer.direction === "upload" ? "upload" : "download"} size={12} />
+                </span>
+                <span className="tf-xfer-name">{transfer.name}</span>
+                <span className="tf-xfer-status">{transfer.status === "running" ? "uploading" : transfer.status}</span>
+                <button className="tf-xfer-close" type="button" title={`Hide ${transfer.name}`} onClick={() => onDismissTransfer(transfer.id)}>
+                  <Icon name="close" size={10} />
+                </button>
+              </div>
+              <div className="tf-xfer-bar">
+                <div className="tf-xfer-fill" style={{ width: transfer.status === "running" ? "48%" : "100%" }} />
+              </div>
+              <div className="tf-xfer-detail">
+                <span>{transfer.detail}</span>
+                {transfer.bytes !== undefined ? <b>{formatBytes(transfer.bytes)}</b> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="tf-foot">
-        <span>{shownFiles.length} items</span>
-        <button className="tf-foot-up" type="button" onClick={() => shownFiles[0] && onTransfer(shownFiles[0])}><Icon name="upload" size={11} />Upload</button>
+        <span>{files.length} items</span>
+        <button className="tf-foot-up" type="button" onClick={onUpload}><Icon name="upload" size={11} />Upload</button>
+        <button className="tf-foot-up" type="button" onClick={onUploadFolder}><Icon name="files" size={11} />Folder</button>
       </div>
     </aside>
   );
@@ -840,16 +1133,32 @@ function TerminalFilesDock({
 function TerminalHistoryDock({
   host,
   history,
+  query,
+  scope,
+  onQueryChange,
+  onScopeChange,
   onRunCommand,
   onClear,
   onClose,
 }: {
   host: string;
   history: CommandHistoryEntry[];
+  query: string;
+  scope: CommandHistoryScope;
+  onQueryChange(query: string): void;
+  onScopeChange(scope: CommandHistoryScope): void;
   onRunCommand(command: string): void;
   onClear(): void;
   onClose(): void;
 }) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredHistory = normalizedQuery
+    ? history.filter((entry) =>
+        entry.command.toLowerCase().includes(normalizedQuery) ||
+        entry.connectionName.toLowerCase().includes(normalizedQuery),
+      )
+    : history;
+
   return (
     <aside className="term-files term-hist" aria-label="History panel">
       <div className="tf-head">
@@ -858,26 +1167,34 @@ function TerminalHistoryDock({
         <button className="tf-icon-btn" type="button" title="Close panel" onClick={onClose}><Icon name="close" size={13} /></button>
       </div>
       <div className="hp-controls">
-        <input className="hp-search" name="command-history-search" placeholder="Search commands..." readOnly value="" />
+        <input
+          className="hp-search"
+          name="command-history-search"
+          placeholder="Search commands..."
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+        />
         <div className="hp-scope">
-          <button className="active" type="button">{host}</button>
-          <button type="button">All hosts</button>
+          <button className={scope === "host" ? "active" : ""} type="button" onClick={() => onScopeChange("host")}>{host}</button>
+          <button className={scope === "all" ? "active" : ""} type="button" onClick={() => onScopeChange("all")}>All hosts</button>
         </div>
       </div>
       <div className="hp-list">
-        {history.length === 0 ? (
-          <div className="hp-empty">No commands logged yet — everything you run is recorded here, searchable per host.</div>
+        {filteredHistory.length === 0 ? (
+          <div className="hp-empty">
+            {history.length === 0 ? "No commands logged yet. Commands you run in this terminal are recorded here." : "No commands match this search."}
+          </div>
         ) : (
-          history.map((entry) => (
+          filteredHistory.map((entry) => (
             <button className="hp-item" type="button" key={entry.id} onClick={() => onRunCommand(entry.command)}>
               <code>{entry.command}</code>
-              <span>{new Date(entry.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+              <span>{scope === "all" ? entry.connectionName : new Date(entry.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
             </button>
           ))
         )}
       </div>
       <div className="tf-foot">
-        <span>{history.length} entries</span>
+        <span>{filteredHistory.length}/{history.length} entries</span>
         <button className="tf-foot-up" type="button" onClick={onClear}><Icon name="trash" size={11} />Clear</button>
       </div>
     </aside>
@@ -957,65 +1274,154 @@ function fileGlyph(entry: BackendFileEntry): string {
 function FilesPane({
   side,
   path,
+  transferTargetPath,
   rows,
-  selected,
-  onSelect,
+  selectedNames,
+  onSelectSingle,
+  onToggleSelection,
   onUp,
   onRefresh,
+  onNewFile,
   onNewFolder,
+  onUploadFolder,
+  onOpenFolder,
+  onOpenPath,
   onTransfer,
+  onTransferMany,
   onEdit,
   onRename,
   onDelete,
+  onDeleteMany,
 }: {
   side: "local" | "remote";
   path: string;
+  transferTargetPath: string;
   rows: BackendFileEntry[];
-  selected: string | null;
-  onSelect(name: string): void;
+  selectedNames: string[];
+  onSelectSingle(name: string): void;
+  onToggleSelection(name: string): void;
   onUp(): void;
   onRefresh(): void;
+  onNewFile(): void;
   onNewFolder(): void;
+  onUploadFolder(): void;
+  onOpenFolder(entry: BackendFileEntry): void;
+  onOpenPath(path: string): void;
   onTransfer(entry: BackendFileEntry): void;
+  onTransferMany(entries: BackendFileEntry[]): void;
   onEdit(entry: BackendFileEntry): void;
   onRename(entry: BackendFileEntry): void;
   onDelete(entry: BackendFileEntry): void;
+  onDeleteMany(entries: BackendFileEntry[]): void;
 }) {
   const transferLabel = side === "local" ? "Upload" : "Download";
-  const selectedEntry = rows.find((row) => row.name === selected) ?? rows[0] ?? null;
+  const selectedSet = useMemo(() => new Set(selectedNames), [selectedNames]);
+  const selectedEntries = rows.filter((row) => selectedSet.has(row.name));
+  const selectedEntry = selectedEntries[0] ?? rows[0] ?? null;
+  const activeTransferEntries = selectedEntries.length > 0 ? selectedEntries : selectedEntry ? [selectedEntry] : [];
+  const [pathDraft, setPathDraft] = useState(path);
+
+  useEffect(() => {
+    setPathDraft(path);
+  }, [path]);
+
+  const handlePathSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextPath = pathDraft.trim();
+    if (!nextPath) {
+      setPathDraft(path);
+      return;
+    }
+    onOpenPath(nextPath);
+  };
+
+  const openOrSelect = (entry: BackendFileEntry) => {
+    if (entry.isDir) {
+      onOpenFolder(entry);
+      return;
+    }
+    onSelectSingle(entry.name);
+  };
+
+  const handleRowKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>, entry: BackendFileEntry) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    openOrSelect(entry);
+  };
 
   return (
     <div className="files-pane">
       <div className="files-pane-header">
         <span className={`fp-badge ${side}`}>{side}</span>
-        <span className="fp-path">{path}</span>
+        <form className="fp-path-form" onSubmit={handlePathSubmit}>
+          <input
+            aria-label={`${side} path`}
+            className="fp-path-input"
+            value={pathDraft}
+            onChange={(event) => setPathDraft(event.target.value)}
+          />
+          <button className="fp-btn" type="submit">Go</button>
+        </form>
         <div className="fp-actions">
           <button className="fp-btn" type="button" title="Go up" onClick={onUp}>↑</button>
-          <button className="fp-btn" type="button" title="New folder" onClick={onNewFolder}><Icon name="plus" size={13} /></button>
+          <button className="fp-btn" type="button" title="New file" onClick={onNewFile}><Icon name="file" size={13} /></button>
+          <button className="fp-btn" type="button" title="New folder" onClick={onNewFolder}><Icon name="files" size={13} /></button>
+          {side === "local" ? (
+            <button className="fp-btn" type="button" title="Upload local folder" onClick={onUploadFolder}><Icon name="files" size={13} /></button>
+          ) : null}
           <button className="fp-btn" type="button" title="Refresh" onClick={onRefresh}><Icon name="refresh" size={12} /></button>
           <button
             className="fp-btn"
             type="button"
-            title={transferLabel}
-            onClick={() => selectedEntry && onTransfer(selectedEntry)}
+            title={activeTransferEntries.length > 1 ? `${transferLabel} selected` : selectedEntry?.isDir ? transferLabel : transferLabel}
+            onClick={() => {
+              if (activeTransferEntries.length === 0) {
+                return;
+              }
+              onTransferMany(activeTransferEntries);
+            }}
           >
             <Icon name={side === "local" ? "upload" : "download"} size={12} />
+          </button>
+          <button
+            className="fp-btn danger"
+            type="button"
+            title="Delete selected"
+            onClick={() => activeTransferEntries.length > 0 && onDeleteMany(activeTransferEntries)}
+          >
+            <Icon name="trash" size={12} />
           </button>
         </div>
       </div>
       <div className="files-toolbar">
         <span className="files-toolbar-label">Path:</span>
-        {path.split("/").filter(Boolean).map((part, index) => (
-          <span className="files-crumb" key={`${side}-${part}-${index}`}>{index === 0 ? "/" : "›"} {part}</span>
+        {pathSegments(path).map((segment) => (
+          <button className="files-crumb" type="button" key={`${side}-${segment.path}`} onClick={() => onOpenPath(segment.path)}>
+            {segment.label}
+          </button>
         ))}
       </div>
       <div className="files-list">
         {rows.map((row) => (
           <div
-            className={`f-item${selected === row.name ? " selected" : ""}`}
-            key={`${side}-${row.name}`}
-            onClick={() => onSelect(row.name)}
+            className={`f-item${selectedSet.has(row.name) ? " selected" : ""}`}
+            key={`${side}-${row.path}`}
+            onClick={() => openOrSelect(row)}
+            onDoubleClick={() => row.isDir && onOpenFolder(row)}
+            onKeyDown={(event) => handleRowKeyDown(event, row)}
+            role="button"
+            tabIndex={0}
           >
+            <label className="f-check" onClick={(event) => event.stopPropagation()} title={`Select ${row.name}`}>
+              <input
+                aria-label={`Select ${row.name}`}
+                checked={selectedSet.has(row.name)}
+                type="checkbox"
+                onChange={() => onToggleSelection(row.name)}
+              />
+            </label>
             <span className="f-item-icon">{fileGlyph(row)}</span>
             <span className="f-item-name">{row.name}</span>
             <span className="f-item-meta">
@@ -1023,11 +1429,15 @@ function FilesPane({
               <span className="f-item-date">{formatFileDate(row.modTime)}</span>
             </span>
             <span className="f-row-actions">
-              <button className="f-act go" type="button" title={transferLabel} onClick={(event) => {
+              <button className="f-act go" type="button" title={row.isDir ? "Open folder" : transferLabel} onClick={(event) => {
                 event.stopPropagation();
+                if (row.isDir) {
+                  onOpenFolder(row);
+                  return;
+                }
                 onTransfer(row);
               }}>
-                <Icon name={side === "local" ? "upload" : "download"} size={13} />
+                <Icon name={row.isDir ? "files" : side === "local" ? "upload" : "download"} size={13} />
               </button>
               {!row.isDir ? (
                 <button className="f-act" type="button" title="Edit" onClick={(event) => {
@@ -1055,11 +1465,11 @@ function FilesPane({
       </div>
       <div className="files-status">
         <span>{rows.length} items</span>
-        {selected ? <span>Selected: <strong>{selected}</strong></span> : null}
+        {selectedNames.length > 0 ? <span>Selected: <strong>{selectedNames.length}</strong></span> : null}
         <span className="fs-spacer" />
         <span className={`fs-dest ${side}`}>
           <Icon name={side === "local" ? "upload" : "download"} size={11} />
-          {transferLabel} → <b>{side === "local" ? "REMOTE /var/www" : "LOCAL /Projects/go-termflow"}</b>
+          {transferLabel} → <b>{side === "local" ? `REMOTE ${transferTargetPath}` : `LOCAL ${transferTargetPath}`}</b>
         </span>
       </div>
     </div>
@@ -1077,11 +1487,19 @@ function FilesView({
   onRemoteUp,
   onLocalRefresh,
   onRemoteRefresh,
+  onNewFile,
   onNewFolder,
+  onUploadFolder,
+  onOpenFolder,
+  onOpenPath,
   onTransfer,
+  onTransferMany,
   onEdit,
   onRename,
   onDelete,
+  onDeleteMany,
+  onDismissTransfer,
+  onClearFinishedTransfers,
 }: {
   activeSession: Session | null;
   localFiles: BackendFileEntry[];
@@ -1093,34 +1511,57 @@ function FilesView({
   onRemoteUp(): void;
   onLocalRefresh(): void;
   onRemoteRefresh(): void;
+  onNewFile(side: "local" | "remote"): void;
   onNewFolder(side: "local" | "remote"): void;
+  onUploadFolder(): void;
+  onOpenFolder(side: "local" | "remote", entry: BackendFileEntry): void;
+  onOpenPath(side: "local" | "remote", path: string): void;
   onTransfer(side: "local" | "remote", entry: BackendFileEntry): void;
+  onTransferMany(side: "local" | "remote", entries: BackendFileEntry[]): void;
   onEdit(side: "local" | "remote", entry: BackendFileEntry): void;
   onRename(side: "local" | "remote", entry: BackendFileEntry): void;
   onDelete(side: "local" | "remote", entry: BackendFileEntry): void;
+  onDeleteMany(side: "local" | "remote", entries: BackendFileEntry[]): void;
+  onDismissTransfer(id: string): void;
+  onClearFinishedTransfers(): void;
 }) {
-  const [localSelection, setLocalSelection] = useState<string | null>("frontend");
-  const [remoteSelection, setRemoteSelection] = useState<string | null>("nginx.conf");
+  const [localSelection, setLocalSelection] = useState<string[]>(["frontend"]);
+  const [remoteSelection, setRemoteSelection] = useState<string[]>(["nginx.conf"]);
 
   useEffect(() => {
     if (localFiles.length === 0) {
-      setLocalSelection(null);
+      setLocalSelection([]);
       return;
     }
-    if (!localFiles.some((file) => file.name === localSelection)) {
-      setLocalSelection(localFiles[0].name);
+    const availableNames = new Set(localFiles.map((file) => file.name));
+    const nextSelection = localSelection.filter((name) => availableNames.has(name));
+    if (nextSelection.length !== localSelection.length) {
+      setLocalSelection(nextSelection);
     }
   }, [localFiles, localSelection]);
 
   useEffect(() => {
     if (remoteFiles.length === 0) {
-      setRemoteSelection(null);
+      setRemoteSelection([]);
       return;
     }
-    if (!remoteFiles.some((file) => file.name === remoteSelection)) {
-      setRemoteSelection(remoteFiles[0].name);
+    const availableNames = new Set(remoteFiles.map((file) => file.name));
+    const nextSelection = remoteSelection.filter((name) => availableNames.has(name));
+    if (nextSelection.length !== remoteSelection.length) {
+      setRemoteSelection(nextSelection);
     }
   }, [remoteFiles, remoteSelection]);
+
+  const toggleLocalSelection = (name: string) => {
+    setLocalSelection((current) =>
+      current.includes(name) ? current.filter((item) => item !== name) : [...current, name],
+    );
+  };
+  const toggleRemoteSelection = (name: string) => {
+    setRemoteSelection((current) =>
+      current.includes(name) ? current.filter((item) => item !== name) : [...current, name],
+    );
+  };
 
   return (
     <section className="view-stack">
@@ -1133,35 +1574,55 @@ function FilesView({
         <FilesPane
           side="local"
           path={localPath}
+          transferTargetPath={remotePath}
           rows={localFiles}
-          selected={localSelection}
-          onSelect={setLocalSelection}
+          selectedNames={localSelection}
+          onSelectSingle={(name) => setLocalSelection([name])}
+          onToggleSelection={toggleLocalSelection}
           onUp={onLocalUp}
           onRefresh={onLocalRefresh}
+          onNewFile={() => onNewFile("local")}
           onNewFolder={() => onNewFolder("local")}
+          onUploadFolder={onUploadFolder}
+          onOpenFolder={(entry) => onOpenFolder("local", entry)}
+          onOpenPath={(path) => onOpenPath("local", path)}
           onTransfer={(entry) => onTransfer("local", entry)}
+          onTransferMany={(entries) => onTransferMany("local", entries)}
           onEdit={(entry) => onEdit("local", entry)}
           onRename={(entry) => onRename("local", entry)}
           onDelete={(entry) => onDelete("local", entry)}
+          onDeleteMany={(entries) => onDeleteMany("local", entries)}
         />
         <div className="pane-divider" />
         <FilesPane
           side="remote"
           path={remotePath}
+          transferTargetPath={localPath}
           rows={remoteFiles}
-          selected={remoteSelection}
-          onSelect={setRemoteSelection}
+          selectedNames={remoteSelection}
+          onSelectSingle={(name) => setRemoteSelection([name])}
+          onToggleSelection={toggleRemoteSelection}
           onUp={onRemoteUp}
           onRefresh={onRemoteRefresh}
+          onNewFile={() => onNewFile("remote")}
           onNewFolder={() => onNewFolder("remote")}
+          onUploadFolder={onUploadFolder}
+          onOpenFolder={(entry) => onOpenFolder("remote", entry)}
+          onOpenPath={(path) => onOpenPath("remote", path)}
           onTransfer={(entry) => onTransfer("remote", entry)}
+          onTransferMany={(entries) => onTransferMany("remote", entries)}
           onEdit={(entry) => onEdit("remote", entry)}
           onRename={(entry) => onRename("remote", entry)}
           onDelete={(entry) => onDelete("remote", entry)}
+          onDeleteMany={(entries) => onDeleteMany("remote", entries)}
         />
         {transfers.length > 0 ? (
           <div className="xfer-stack">
-            {transfers.slice(0, 4).map((transfer) => (
+            <div className="xfer-history-head">
+              <span>Transfer history</span>
+              <button type="button" onClick={onClearFinishedTransfers}>Clear done</button>
+            </div>
+            {transfers.map((transfer) => (
               <div className={`xfer-card ${transfer.status}`} key={transfer.id}>
                 <div className="xfer-top">
                   <span className="xfer-dir">
@@ -1169,6 +1630,9 @@ function FilesView({
                   </span>
                   <span className="xfer-name">{transfer.name} · {transfer.detail}</span>
                   <span className="xfer-pct">{transfer.status === "running" ? "..." : transfer.status}</span>
+                  <button className="xfer-close" type="button" title={`Hide ${transfer.name}`} onClick={() => onDismissTransfer(transfer.id)}>
+                    <Icon name="close" size={11} />
+                  </button>
                 </div>
                 <div className="xfer-bar">
                   <div className="xfer-bar-fill" style={{ width: transfer.status === "running" ? "48%" : "100%" }} />
@@ -1236,6 +1700,52 @@ function FileEditorModal({
           </button>
           <button className="view-btn primary" type="button" disabled={!dirty || editor.saving || editor.isBinary} onClick={onSave}>
             {editor.saving ? "Saving..." : "Save"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function DeleteConnectionConfirm({
+  connection,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  connection: Connection;
+  deleting: boolean;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  return (
+    <div className="danger-overlay" role="presentation" onMouseDown={deleting ? undefined : onCancel}>
+      <section
+        className="danger-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-connection-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="danger-head">
+          <span className="danger-icon">
+            <Icon name="trash" size={16} />
+          </span>
+          <div>
+            <div className="danger-title" id="delete-connection-title">Delete Connection</div>
+            <div className="danger-sub">This removes the saved host from your connection list.</div>
+          </div>
+        </header>
+        <div className="danger-target">
+          <span className="danger-target-name">{connection.name}</span>
+          <span>{connection.username}@{connection.host}:{connection.port}</span>
+        </div>
+        <footer className="danger-actions">
+          <button className="btn" type="button" onClick={onCancel} disabled={deleting}>
+            Cancel
+          </button>
+          <button className="btn danger" type="button" onClick={onConfirm} disabled={deleting}>
+            {deleting ? "Deleting..." : "Delete"}
           </button>
         </footer>
       </section>
@@ -1587,11 +2097,19 @@ function SecondaryView({
   onRemoteUp,
   onLocalRefresh,
   onRemoteRefresh,
+  onNewFile,
   onNewFolder,
+  onUploadFolder,
+  onOpenFolder,
+  onOpenPath,
   onTransfer,
+  onTransferMany,
   onEditFile,
   onRenameFile,
   onDeleteFile,
+  onDeleteFiles,
+  onDismissTransfer,
+  onClearFinishedTransfers,
   onCreateSavedCommand,
   onToggleCommandPin,
 }: {
@@ -1611,11 +2129,19 @@ function SecondaryView({
   onRemoteUp(): void;
   onLocalRefresh(): void;
   onRemoteRefresh(): void;
+  onNewFile(side: "local" | "remote"): void;
   onNewFolder(side: "local" | "remote"): void;
+  onUploadFolder(): void;
+  onOpenFolder(side: "local" | "remote", entry: BackendFileEntry): void;
+  onOpenPath(side: "local" | "remote", path: string): void;
   onTransfer(side: "local" | "remote", entry: BackendFileEntry): void;
+  onTransferMany(side: "local" | "remote", entries: BackendFileEntry[]): void;
   onEditFile(side: "local" | "remote", entry: BackendFileEntry): void;
   onRenameFile(side: "local" | "remote", entry: BackendFileEntry): void;
   onDeleteFile(side: "local" | "remote", entry: BackendFileEntry): void;
+  onDeleteFiles(side: "local" | "remote", entries: BackendFileEntry[]): void;
+  onDismissTransfer(id: string): void;
+  onClearFinishedTransfers(): void;
   onCreateSavedCommand(): void;
   onToggleCommandPin(command: SavedCommand): void;
 }) {
@@ -1632,11 +2158,19 @@ function SecondaryView({
         onRemoteUp={onRemoteUp}
         onLocalRefresh={onLocalRefresh}
         onRemoteRefresh={onRemoteRefresh}
+        onNewFile={onNewFile}
         onNewFolder={onNewFolder}
+        onUploadFolder={onUploadFolder}
+        onOpenFolder={onOpenFolder}
+        onOpenPath={onOpenPath}
         onTransfer={onTransfer}
+        onTransferMany={onTransferMany}
         onEdit={onEditFile}
         onRename={onRenameFile}
         onDelete={onDeleteFile}
+        onDeleteMany={onDeleteFiles}
+        onDismissTransfer={onDismissTransfer}
+        onClearFinishedTransfers={onClearFinishedTransfers}
       />
     );
   }
@@ -1653,17 +2187,22 @@ export default function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [terminalBuffers, setTerminalBuffers] = useState<Record<string, string>>({});
+  const [fullscreenTerminalSessions, setFullscreenTerminalSessions] = useState<Record<string, boolean>>({});
   const [savedCommands, setSavedCommands] = useState<SavedCommand[]>(DEMO_SAVED_COMMANDS);
   const [commandHistory, setCommandHistory] = useState<CommandHistoryEntry[]>([]);
-  const [localFiles, setLocalFiles] = useState<BackendFileEntry[]>(DEMO_LOCAL_FILES);
-  const [remoteFiles, setRemoteFiles] = useState<BackendFileEntry[]>(DEMO_REMOTE_FILES);
+  const [commandHistoryQuery, setCommandHistoryQuery] = useState("");
+  const [commandHistoryScope, setCommandHistoryScope] = useState<CommandHistoryScope>("host");
+  const [localFiles, setLocalFiles] = useState<BackendFileEntry[]>([]);
+  const [remoteFiles, setRemoteFiles] = useState<BackendFileEntry[]>([]);
   const [transfers, setTransfers] = useState<TransferRecord[]>([]);
   const [fileEditor, setFileEditor] = useState<FileEditorState | null>(null);
   const [monitorSnapshot, setMonitorSnapshot] = useState<MonitorSnapshot | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [localPath, setLocalPath] = useState("/Users/delong/Work/go-termflow");
-  const [remotePath, setRemotePath] = useState("/var/www");
+  const [remotePathBySession, setRemotePathBySession] = useState<Record<string, string>>({});
   const liveSessionIdsRef = useRef<Set<string>>(new Set());
+  const pendingCwdSyncRef = useRef<PendingCwdSync | null>(null);
+  const refreshRemoteFilesRef = useRef<(path?: string) => Promise<void>>(async () => {});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("terminal");
   const [theme, setTheme] = useState<"dark" | "light">("light");
@@ -1679,6 +2218,8 @@ export default function App() {
   const [backendAvailable, setBackendAvailable] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
+  const [pendingDeleteConnection, setPendingDeleteConnection] = useState<Connection | null>(null);
+  const [deletingConnectionId, setDeletingConnectionId] = useState<string | null>(null);
   const [terminalSize, setTerminalSize] = useState<TerminalSize>(DEFAULT_TERMINAL_SIZE);
   const clock = useClock();
 
@@ -1693,6 +2234,21 @@ export default function App() {
         : null,
     [activeSession, connections],
   );
+  const remoteHomePath = defaultRemotePath(activeConnection);
+  const remotePath = activeSession ? remotePathBySession[activeSession.id] ?? remoteHomePath : remoteHomePath;
+
+  function setSessionRemotePath(sessionID: string, path: string) {
+    const nextPath = normalizeRemotePath(path);
+    setRemotePathBySession((current) => {
+      if (current[sessionID] === nextPath) {
+        return current;
+      }
+      return {
+        ...current,
+        [sessionID]: nextPath,
+      };
+    });
+  }
 
   async function refreshConnectionsFromBackend() {
     if (!backendAvailable) {
@@ -1724,21 +2280,86 @@ export default function App() {
   }
 
   async function refreshRemoteFiles(path = remotePath) {
-    if (!activeSession) {
+    const session = activeSession;
+    if (!session) {
       setStatus("No active session");
+      setRemoteFiles([]);
       return;
     }
+    const nextPath = normalizeRemotePath(path);
     if (!backendAvailable) {
-      setRemoteFiles(DEMO_REMOTE_FILES);
+      setSessionRemotePath(session.id, nextPath);
+      setRemoteFiles(demoRemoteFilesForPath(nextPath));
+      setStatus(`Preview files: ${nextPath}`);
       return;
     }
     try {
-      const files = await listFiles({ side: "remote", sessionId: activeSession.id, path });
-      setRemotePath(path);
+      const files = await listFiles({ side: "remote", sessionId: session.id, path: nextPath });
+      setSessionRemotePath(session.id, nextPath);
       setRemoteFiles(files);
     } catch (error) {
       setStatus(messageFromError(error));
     }
+  }
+
+  async function syncRemoteFilesToTerminalCwd() {
+    if (!activeSession) {
+      setStatus("No active session");
+      setRemoteFiles([]);
+      return;
+    }
+    if (!backendAvailable) {
+      await refreshRemoteFiles(remotePath);
+      setStatus(`Preview files: ${remotePath}`);
+      return;
+    }
+
+    if (pendingCwdSyncRef.current) {
+      window.clearTimeout(pendingCwdSyncRef.current.timeoutId);
+      pendingCwdSyncRef.current = null;
+    }
+
+    const sessionId = activeSession.id;
+    const timeoutId = window.setTimeout(() => {
+      if (pendingCwdSyncRef.current?.sessionId !== sessionId) {
+        return;
+      }
+      pendingCwdSyncRef.current = null;
+      setStatus("Could not read terminal working directory");
+    }, 2500);
+
+    pendingCwdSyncRef.current = { sessionId, output: "", timeoutId };
+    setStatus("Syncing files with terminal path");
+    try {
+      await writeTerminal(sessionId, CWD_SYNC_COMMAND);
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      if (pendingCwdSyncRef.current?.sessionId === sessionId) {
+        pendingCwdSyncRef.current = null;
+      }
+      setStatus(messageFromError(error));
+    }
+  }
+
+  useEffect(() => {
+    refreshRemoteFilesRef.current = refreshRemoteFiles;
+  });
+
+  async function refreshCommandHistory(scope = commandHistoryScope) {
+    if (!backendAvailable) {
+      setCommandHistory([]);
+      return;
+    }
+    if (scope === "host" && !activeSession) {
+      setCommandHistory([]);
+      return;
+    }
+    const filter: Parameters<typeof listCommandHistory>[0] =
+      scope === "host" && activeSession
+        ? { connectionId: activeSession.connectionId, limit: 200 }
+        : { limit: 200 };
+    const history = await listCommandHistory(filter);
+    setCommandHistory(history);
   }
 
   async function refreshMonitorSnapshot() {
@@ -1822,9 +2443,29 @@ export default function App() {
       if (!liveSessionIdsRef.current.has(event.sessionId)) {
         return;
       }
+      let terminalOutput = event.data;
+      const pendingSync = pendingCwdSyncRef.current;
+      if (pendingSync?.sessionId === event.sessionId) {
+        const output = `${pendingSync.output}${event.data}`.slice(-4096);
+        const syncedPath = extractSyncedWorkingDirectory(output);
+        if (syncedPath) {
+          window.clearTimeout(pendingSync.timeoutId);
+          pendingCwdSyncRef.current = null;
+          terminalOutput = cleanCwdSyncOutput(output);
+          void refreshRemoteFilesRef.current(syncedPath).then(() => {
+            setStatus(`Synced files to ${syncedPath}`);
+          });
+        } else {
+          pendingCwdSyncRef.current = { ...pendingSync, output };
+          return;
+        }
+      }
+      if (!terminalOutput) {
+        return;
+      }
       setTerminalBuffers((current) => ({
         ...current,
-        [event.sessionId]: appendTerminalData(current[event.sessionId] ?? "", event.data),
+        [event.sessionId]: appendTerminalData(current[event.sessionId] ?? "", terminalOutput),
       }));
     });
 
@@ -1852,8 +2493,17 @@ export default function App() {
 
     const offClosed = onWailsEvent<SessionClosedEvent>(SESSION_CLOSED_EVENT, (event) => {
       liveSessionIdsRef.current.delete(event.sessionId);
+      if (pendingCwdSyncRef.current?.sessionId === event.sessionId) {
+        window.clearTimeout(pendingCwdSyncRef.current.timeoutId);
+        pendingCwdSyncRef.current = null;
+      }
       setSessions((current) => current.filter((session) => session.id !== event.sessionId));
       setTerminalBuffers((current) => {
+        const next = { ...current };
+        delete next[event.sessionId];
+        return next;
+      });
+      setFullscreenTerminalSessions((current) => {
         const next = { ...current };
         delete next[event.sessionId];
         return next;
@@ -1862,6 +2512,10 @@ export default function App() {
     });
 
     return () => {
+      if (pendingCwdSyncRef.current) {
+        window.clearTimeout(pendingCwdSyncRef.current.timeoutId);
+        pendingCwdSyncRef.current = null;
+      }
       offOutput();
       offStatus();
       offError();
@@ -1881,20 +2535,26 @@ export default function App() {
     if (!activeSession) {
       setCommandHistory([]);
       setMonitorSnapshot(null);
+      setRemoteFiles([]);
       return;
     }
     if (!backendAvailable) {
       setCommandHistory([]);
-      setRemoteFiles(DEMO_REMOTE_FILES);
+      setRemoteFiles(demoRemoteFilesForPath(remotePath));
       return;
     }
+    const session = activeSession;
 
     async function loadSessionData() {
       try {
+        const historyFilter: Parameters<typeof listCommandHistory>[0] =
+          commandHistoryScope === "host"
+            ? { connectionId: session.connectionId, limit: 200 }
+            : { limit: 200 };
         const [history, files, snapshot] = await Promise.all([
-          listCommandHistory({ connectionId: activeSession.connectionId, limit: 50 }),
-          listFiles({ side: "remote", sessionId: activeSession.id, path: remotePath }),
-          getMonitorSnapshot(activeSession.id),
+          listCommandHistory(historyFilter),
+          listFiles({ side: "remote", sessionId: session.id, path: remotePath }),
+          getMonitorSnapshot(session.id),
         ]);
         if (cancelled) {
           return;
@@ -1911,7 +2571,7 @@ export default function App() {
 
     void loadSessionData();
     const id = window.setInterval(() => {
-      void getMonitorSnapshot(activeSession.id)
+      void getMonitorSnapshot(session.id)
         .then((snapshot) => {
           if (!cancelled) {
             setMonitorSnapshot(snapshot);
@@ -1924,7 +2584,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [activeSession, backendAvailable, remotePath]);
+  }, [activeSession, backendAvailable, commandHistoryScope, remotePath]);
 
   async function handleSaveConnection(input: SaveConnectionInput) {
     if (!backendAvailable) {
@@ -1978,12 +2638,43 @@ export default function App() {
     }
   }
 
-  async function handleDeleteConnection(connection: Connection) {
-    const shouldDelete = window.confirm(`Delete connection "${connection.name}"?`);
-    if (!shouldDelete) {
+  async function handleTrustHostKeyAndOpen(connection: Connection) {
+    const trustedInput: SaveConnectionInput = {
+      id: connection.id,
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      username: connection.username,
+      authType: connection.authType,
+      password: connection.password,
+      keyPath: connection.keyPath,
+      insecureIgnoreHostKey: true,
+      group: connection.group,
+      tags: connection.tags,
+    };
+
+    if (!backendAvailable) {
+      const trusted = { ...connection, insecureIgnoreHostKey: true };
+      setConnections((current) =>
+        sortConnections(current.map((item) => (item.id === connection.id ? trusted : item))),
+      );
+      await handleOpenConnection(trusted, trusted.password, true);
       return;
     }
 
+    try {
+      setStatus(`Trusting host key for ${connection.name}`);
+      const saved = await saveConnection(trustedInput);
+      setConnections((current) =>
+        sortConnections(current.map((item) => (item.id === saved.id ? saved : item))),
+      );
+      await handleOpenConnection(saved, saved.password, true);
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function confirmDeleteConnection(connection: Connection) {
     const removeConnection = () => {
       const removedSessionIds = new Set(
         sessions
@@ -1992,13 +2683,16 @@ export default function App() {
       );
       setConnections((current) => current.filter((item) => item.id !== connection.id));
       setSessions((current) => current.filter((session) => session.connectionId !== connection.id));
-      setTerminalBuffers((current) => {
-        const next = { ...current };
-        removedSessionIds.forEach((sessionID) => {
-          delete next[sessionID];
-        });
-        return next;
-      });
+      setTerminalBuffers((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([sessionID]) => !removedSessionIds.has(sessionID)),
+        ),
+      );
+      setFullscreenTerminalSessions((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([sessionID]) => !removedSessionIds.has(sessionID)),
+        ),
+      );
       setActiveSessionId((current) => {
         if (current && !removedSessionIds.has(current)) {
           return current;
@@ -2008,9 +2702,12 @@ export default function App() {
       });
     };
 
+    setDeletingConnectionId(connection.id);
     if (!backendAvailable) {
       removeConnection();
       setStatus(`Deleted preview connection: ${connection.name}`);
+      setPendingDeleteConnection(null);
+      setDeletingConnectionId(null);
       return;
     }
 
@@ -2020,9 +2717,12 @@ export default function App() {
       await deleteConnection(connection.id);
       removeConnection();
       setStatus(`Deleted connection: ${connection.name}`);
+      setPendingDeleteConnection(null);
       await refreshConnectionsFromBackend();
     } catch (error) {
       setStatus(messageFromError(error));
+    } finally {
+      setDeletingConnectionId((current) => (current === connection.id ? null : current));
     }
   }
 
@@ -2052,7 +2752,7 @@ export default function App() {
       setSessions((current) => [...current, session]);
       setTerminalBuffers((current) => ({
         ...current,
-        [session.id]: DEMO_BUFFERS["demo-prod"].replaceAll("prod-01", connection.name),
+        [session.id]: DEMO_BUFFERS["demo-prod"].split("prod-01").join(connection.name),
       }));
       setActiveSessionId(session.id);
       setActiveView("terminal");
@@ -2091,6 +2791,18 @@ export default function App() {
     );
   }
 
+  function handleTerminalFullscreenChange(sessionId: string, fullscreen: boolean) {
+    setFullscreenTerminalSessions((current) => {
+      if (current[sessionId] === fullscreen) {
+        return current;
+      }
+      return {
+        ...current,
+        [sessionId]: fullscreen,
+      };
+    });
+  }
+
   function handleCloseSession(sessionId: string) {
     const session = sessions.find((item) => item.id === sessionId);
     if (!session) {
@@ -2098,6 +2810,11 @@ export default function App() {
     }
     setSessions((current) => current.filter((item) => item.id !== sessionId));
     setTerminalBuffers((current) => {
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+    setFullscreenTerminalSessions((current) => {
       const next = { ...current };
       delete next[sessionId];
       return next;
@@ -2144,9 +2861,20 @@ export default function App() {
       });
       setTerminalCommand("");
       setTerminalSmartOpen(false);
-      const history = await listCommandHistory({ connectionId: activeSession.connectionId, limit: 50 });
-      setCommandHistory(history);
+      await refreshCommandHistory(commandHistoryScope);
       setStatus(terminalBroadcast ? `Broadcast command: ${trimmed}` : `Ran command: ${trimmed}`);
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function handleTerminalCommandCommit(command: string) {
+    if (!activeSession || !backendAvailable) {
+      return;
+    }
+    try {
+      await recordCommandHistory(activeSession.id, command);
+      await refreshCommandHistory(commandHistoryScope);
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -2198,43 +2926,40 @@ export default function App() {
     return activeSession.id;
   }
 
-  async function handleFileTransfer(side: "local" | "remote", entry: BackendFileEntry) {
-    if (entry.isDir) {
-      setStatus("Folder transfer is not supported yet; choose a file");
-      return;
-    }
-    if (!backendAvailable) {
-      setStatus("Transfer requires the Wails backend");
-      return;
-    }
-    const sessionId = requireActiveRemoteSession();
-    if (!sessionId) {
-      return;
-    }
+  function dismissTransfer(id: string) {
+    setTransfers((current) => current.filter((transfer) => transfer.id !== id));
+  }
 
-    const direction = side === "local" ? "upload" : "download";
-    const defaultLocalPath = side === "local" ? entry.path : joinPath(localPath, entry.name);
-    const defaultRemotePath = side === "local" ? joinPath(remotePath, entry.name) : entry.path;
-    const destination = window.prompt(
-      direction === "upload" ? "Upload to remote path" : "Download to local path",
-      direction === "upload" ? defaultRemotePath : defaultLocalPath,
-    );
-    if (!destination?.trim()) {
-      return;
-    }
+  function clearFinishedTransfers() {
+    setTransfers((current) => current.filter((transfer) => transfer.status === "running"));
+  }
 
-    const localTarget = direction === "upload" ? defaultLocalPath : destination.trim();
-    const remoteTarget = direction === "upload" ? destination.trim() : defaultRemotePath;
-    const transferId = `transfer-${Date.now()}`;
+  async function runFileTransfer({
+    sessionId,
+    direction,
+    name,
+    localTarget,
+    remoteTarget,
+    refreshRemotePath,
+  }: {
+    sessionId: string;
+    direction: "upload" | "download";
+    name: string;
+    localTarget: string;
+    remoteTarget: string;
+    refreshRemotePath?: string;
+  }) {
+    const transferId = `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const detail = direction === "upload" ? `${localTarget} -> ${remoteTarget}` : `${remoteTarget} -> ${localTarget}`;
     const running: TransferRecord = {
       id: transferId,
       direction,
-      name: entry.name,
-      detail: direction === "upload" ? `${localTarget} -> ${remoteTarget}` : `${remoteTarget} -> ${localTarget}`,
+      name,
+      detail,
       status: "running",
     };
-    setTransfers((current) => [running, ...current].slice(0, 6));
-    setStatus(`${direction === "upload" ? "Uploading" : "Downloading"} ${entry.name}`);
+    setTransfers((current) => [running, ...current].slice(0, 20));
+    setStatus(`${direction === "upload" ? "Uploading" : "Downloading"} ${name}`);
 
     try {
       const result = await transferFile({
@@ -2247,20 +2972,252 @@ export default function App() {
       setTransfers((current) =>
         current.map((transfer) =>
           transfer.id === transferId
-            ? { ...transfer, status: "done", bytes: result.bytesTransferred }
+            ? {
+                ...transfer,
+                status: "done",
+                bytes: result.bytesTransferred,
+                completedAt: new Date().toISOString(),
+              }
             : transfer,
         ),
       );
-      setStatus(`${direction === "upload" ? "Uploaded" : "Downloaded"} ${entry.name} (${formatBytes(result.bytesTransferred)})`);
-      await Promise.all([refreshLocalFiles(), refreshRemoteFiles()]);
+      setStatus(`${direction === "upload" ? "Uploaded" : "Downloaded"} ${name} (${formatBytes(result.bytesTransferred)})`);
+      await Promise.all([
+        refreshLocalFiles(),
+        refreshRemoteFiles(refreshRemotePath ?? (direction === "upload" ? parentPath(remoteTarget) : remotePath)),
+      ]);
     } catch (error) {
       const message = messageFromError(error);
       setTransfers((current) =>
         current.map((transfer) =>
-          transfer.id === transferId ? { ...transfer, status: "failed", detail: message } : transfer,
+          transfer.id === transferId
+            ? { ...transfer, status: "failed", detail: message, completedAt: new Date().toISOString() }
+            : transfer,
         ),
       );
       setStatus(message);
+    }
+  }
+
+  async function transferEntry(side: "local" | "remote", entry: BackendFileEntry, sessionId: string) {
+    const direction = side === "local" ? "upload" : "download";
+    let localTarget = side === "local" ? entry.path : joinPath(localPath, entry.name);
+    let remoteTarget = side === "local" ? joinPath(remotePath, entry.name) : entry.path;
+
+    if (direction === "upload") {
+      const destination = window.prompt("Upload to remote path", remoteTarget);
+      if (!destination?.trim()) {
+        return;
+      }
+      remoteTarget = destination.trim();
+    } else if (entry.isDir) {
+      let localParent = "";
+      try {
+        localParent = await selectLocalDirectory("Select local destination folder");
+      } catch {
+        localParent = window.prompt("Download folder into local directory", localPath) ?? "";
+      }
+      if (!localParent?.trim()) {
+        return;
+      }
+      localTarget = joinPath(localParent.trim(), entry.name);
+    } else {
+      try {
+        localTarget = await selectSaveFile(entry.name);
+      } catch {
+        localTarget = window.prompt("Download to local path", localTarget) ?? "";
+      }
+      if (!localTarget?.trim()) {
+        return;
+      }
+      localTarget = localTarget.trim();
+    }
+
+    await runFileTransfer({
+      sessionId,
+      direction,
+      name: entry.name,
+      localTarget,
+      remoteTarget,
+      refreshRemotePath: direction === "upload" ? parentPath(remoteTarget) : remotePath,
+    });
+  }
+
+  async function handleFileTransfer(side: "local" | "remote", entry: BackendFileEntry) {
+    await handleFileTransfers(side, [entry]);
+  }
+
+  async function handleFileTransfers(side: "local" | "remote", entries: BackendFileEntry[]) {
+    if (!backendAvailable) {
+      setStatus("Transfer requires the Wails backend");
+      return;
+    }
+    const sessionId = requireActiveRemoteSession();
+    if (!sessionId) {
+      return;
+    }
+    const selectedEntries = entries.filter(Boolean);
+    if (selectedEntries.length === 0) {
+      setStatus("Select files or folders to transfer");
+      return;
+    }
+    if (selectedEntries.length > 1) {
+      if (side === "local") {
+        for (const entry of selectedEntries) {
+          await runFileTransfer({
+            sessionId,
+            direction: "upload",
+            name: entry.name,
+            localTarget: entry.path,
+            remoteTarget: joinPath(remotePath, entry.name),
+            refreshRemotePath: remotePath,
+          });
+        }
+        return;
+      }
+
+      let localParent = "";
+      try {
+        localParent = await selectLocalDirectory("Select local destination folder");
+      } catch {
+        localParent = window.prompt("Download selected items into local directory", localPath) ?? "";
+      }
+      if (!localParent?.trim()) {
+        return;
+      }
+      for (const entry of selectedEntries) {
+        await runFileTransfer({
+          sessionId,
+          direction: "download",
+          name: entry.name,
+          localTarget: joinPath(localParent.trim(), entry.name),
+          remoteTarget: entry.path,
+          refreshRemotePath: remotePath,
+        });
+      }
+      return;
+    }
+    for (const entry of selectedEntries) {
+      await transferEntry(side, entry, sessionId);
+    }
+  }
+
+  async function handleUploadToRemoteDirectory() {
+    if (!backendAvailable) {
+      setStatus("Upload requires the Wails backend");
+      return;
+    }
+    const sessionId = requireActiveRemoteSession();
+    if (!sessionId) {
+      return;
+    }
+
+    let localSources: string[] = [];
+    try {
+      localSources = await selectLocalFiles();
+    } catch {
+      const localSource = await selectLocalFile().catch(() => window.prompt("Local file to upload", localPath) ?? "");
+      localSources = localSource ? [localSource] : [];
+    }
+    const cleanSources = localSources.map((source) => source.trim()).filter(Boolean);
+    if (cleanSources.length === 0) {
+      return;
+    }
+    for (const localSource of cleanSources) {
+      const name = baseName(localSource);
+      if (!name) {
+        setStatus("Choose a local file path to upload");
+        continue;
+      }
+      await runFileTransfer({
+        sessionId,
+        direction: "upload",
+        name,
+        localTarget: localSource,
+        remoteTarget: joinPath(remotePath, name),
+        refreshRemotePath: remotePath,
+      });
+    }
+  }
+
+  async function handleUploadFolderToRemoteDirectory() {
+    if (!backendAvailable) {
+      setStatus("Upload requires the Wails backend");
+      return;
+    }
+    const sessionId = requireActiveRemoteSession();
+    if (!sessionId) {
+      return;
+    }
+    let localSource = "";
+    try {
+      localSource = await selectLocalDirectory("Select local folder to upload");
+    } catch {
+      localSource = window.prompt("Local folder to upload", localPath) ?? "";
+    }
+    if (!localSource?.trim()) {
+      return;
+    }
+    const cleanSource = localSource.trim();
+    const name = baseName(cleanSource);
+    if (!name) {
+      setStatus("Choose a local folder path to upload");
+      return;
+    }
+    await runFileTransfer({
+      sessionId,
+      direction: "upload",
+      name,
+      localTarget: cleanSource,
+      remoteTarget: joinPath(remotePath, name),
+      refreshRemotePath: remotePath,
+    });
+  }
+
+  async function handleNewFile(side: "local" | "remote") {
+    const name = window.prompt("New file name");
+    if (!name?.trim()) {
+      return;
+    }
+    if (!backendAvailable) {
+      setStatus("File creation requires the Wails backend");
+      return;
+    }
+    let sessionId: string | undefined;
+    if (side === "remote") {
+      const remoteSessionId = requireActiveRemoteSession();
+      if (!remoteSessionId) {
+        return;
+      }
+      sessionId = remoteSessionId;
+    }
+    const cleanName = name.trim();
+    const existingFiles = side === "local" ? localFiles : remoteFiles;
+    if (existingFiles.some((file) => file.name === cleanName) && !window.confirm(`Overwrite existing ${side} file "${cleanName}"?`)) {
+      return;
+    }
+
+    const target = joinPath(side === "local" ? localPath : remotePath, cleanName);
+    try {
+      await saveFile({ side, sessionId, path: target, content: "" });
+      setFileEditor({
+        side,
+        path: target,
+        name: cleanName,
+        language: "text",
+        originalContent: "",
+        content: "",
+        isBinary: false,
+        saving: false,
+      });
+      setStatus(`Created ${side} file: ${target}`);
+      if (side === "local") {
+        await refreshLocalFiles();
+      } else {
+        await refreshRemoteFiles();
+      }
+    } catch (error) {
+      setStatus(messageFromError(error));
     }
   }
 
@@ -2273,9 +3230,13 @@ export default function App() {
       setStatus("Folder creation requires the Wails backend");
       return;
     }
-    const sessionId = side === "remote" ? requireActiveRemoteSession() : undefined;
-    if (side === "remote" && !sessionId) {
-      return;
+    let sessionId: string | undefined;
+    if (side === "remote") {
+      const remoteSessionId = requireActiveRemoteSession();
+      if (!remoteSessionId) {
+        return;
+      }
+      sessionId = remoteSessionId;
     }
     const target = joinPath(side === "local" ? localPath : remotePath, name.trim());
     try {
@@ -2299,9 +3260,13 @@ export default function App() {
       setStatus("Editing requires the Wails backend");
       return;
     }
-    const sessionId = side === "remote" ? requireActiveRemoteSession() : undefined;
-    if (side === "remote" && !sessionId) {
-      return;
+    let sessionId: string | undefined;
+    if (side === "remote") {
+      const remoteSessionId = requireActiveRemoteSession();
+      if (!remoteSessionId) {
+        return;
+      }
+      sessionId = remoteSessionId;
     }
     try {
       const content: FileContent = await readFile({ side, sessionId, path: entry.path });
@@ -2330,9 +3295,13 @@ export default function App() {
       setStatus("Rename requires the Wails backend");
       return;
     }
-    const sessionId = side === "remote" ? requireActiveRemoteSession() : undefined;
-    if (side === "remote" && !sessionId) {
-      return;
+    let sessionId: string | undefined;
+    if (side === "remote") {
+      const remoteSessionId = requireActiveRemoteSession();
+      if (!remoteSessionId) {
+        return;
+      }
+      sessionId = remoteSessionId;
     }
     const newPath = joinPath(parentPath(entry.path), nextName.trim());
     try {
@@ -2349,20 +3318,39 @@ export default function App() {
   }
 
   async function handleDeleteFile(side: "local" | "remote", entry: BackendFileEntry) {
-    if (!window.confirm(`Delete ${side} ${entry.isDir ? "folder" : "file"} "${entry.name}"?`)) {
+    await handleDeleteFiles(side, [entry]);
+  }
+
+  async function handleDeleteFiles(side: "local" | "remote", entries: BackendFileEntry[]) {
+    const selectedEntries = entries.filter(Boolean);
+    if (selectedEntries.length === 0) {
+      setStatus("Select files or folders to delete");
+      return;
+    }
+    const description =
+      selectedEntries.length === 1
+        ? `${side} ${selectedEntries[0].isDir ? "folder" : "file"} "${selectedEntries[0].name}"`
+        : `${selectedEntries.length} ${side} items`;
+    if (!window.confirm(`Delete ${description}?`)) {
       return;
     }
     if (!backendAvailable) {
       setStatus("Delete requires the Wails backend");
       return;
     }
-    const sessionId = side === "remote" ? requireActiveRemoteSession() : undefined;
-    if (side === "remote" && !sessionId) {
-      return;
+    let sessionId: string | undefined;
+    if (side === "remote") {
+      const remoteSessionId = requireActiveRemoteSession();
+      if (!remoteSessionId) {
+        return;
+      }
+      sessionId = remoteSessionId;
     }
     try {
-      await deleteFile({ side, sessionId, path: entry.path });
-      setStatus(`Deleted ${entry.name}`);
+      for (const entry of selectedEntries) {
+        await deleteFile({ side, sessionId, path: entry.path });
+      }
+      setStatus(selectedEntries.length === 1 ? `Deleted ${selectedEntries[0].name}` : `Deleted ${selectedEntries.length} ${side} items`);
       if (side === "local") {
         await refreshLocalFiles();
       } else {
@@ -2381,9 +3369,13 @@ export default function App() {
       setStatus("Saving requires the Wails backend");
       return;
     }
-    const sessionId = fileEditor.side === "remote" ? requireActiveRemoteSession() : undefined;
-    if (fileEditor.side === "remote" && !sessionId) {
-      return;
+    let sessionId: string | undefined;
+    if (fileEditor.side === "remote") {
+      const remoteSessionId = requireActiveRemoteSession();
+      if (!remoteSessionId) {
+        return;
+      }
+      sessionId = remoteSessionId;
     }
     setFileEditor((current) => current ? { ...current, saving: true } : current);
     try {
@@ -2508,10 +3500,19 @@ export default function App() {
   const terminalIsProd = isProductionConnection(activeConnection);
   const terminalDisplayUser = terminalUser(activeConnection);
   const terminalDisplayHost = terminalHost(activeConnection, activeSession);
-  const terminalDisplayPath = terminalPath(activeConnection);
+  const terminalDisplayPath = terminalDock === "files" ? remotePath : terminalPath(activeConnection);
   const activeTerminalBuffer = activeSession ? terminalBuffers[activeSession.id] ?? "" : "";
+  const activeTerminalFullscreen = activeSession ? fullscreenTerminalSessions[activeSession.id] === true : false;
+  const terminalLayoutKey = [
+    activeSession?.id ?? "none",
+    activeTerminalFullscreen ? "fullscreen" : "shell",
+    terminalDock ?? "none",
+    terminalSmartOpen && !activeTerminalFullscreen ? "smart" : "no-smart",
+    terminalBroadcast && !activeTerminalFullscreen ? "broadcast" : "no-broadcast",
+  ].join(":");
   const terminalCPU = monitorSnapshot?.cpuPercent ?? 0;
   const terminalMemory = monitorSnapshot?.memoryPercent ?? 0;
+  const hideStatusBar = activeView === "terminal" && activeTerminalFullscreen;
   return (
     <div className="app" data-theme={theme}>
       <header className="titlebar">
@@ -2644,14 +3645,21 @@ export default function App() {
             .map((session) => session.connectionId)}
           onCreate={() => {
             setEditingConnection(null);
+            setPendingDeleteConnection(null);
             setIsModalOpen(true);
           }}
           onEdit={(connection) => {
             setEditingConnection(connection);
+            setPendingDeleteConnection(null);
             setIsModalOpen(true);
           }}
-          onDelete={handleDeleteConnection}
+          onDelete={(connection) => {
+            setEditingConnection(null);
+            setIsModalOpen(false);
+            setPendingDeleteConnection(connection);
+          }}
           onOpen={handleOpenConnection}
+          onTrustHostKey={(connection) => void handleTrustHostKeyAndOpen(connection)}
           onRefresh={() => void refreshConnectionsFromBackend()}
         />
 
@@ -2666,7 +3674,7 @@ export default function App() {
                 <div className="tt-spacer" />
                 {!terminalDock ? (
                   <div className="tt-vitals" aria-label="Session vitals">
-                    <button className="tt-vital critical cpu" type="button" onClick={() => setTerminalDock("monitor")}>
+                    <button className={`tt-vital ${metricTone(terminalCPU)} cpu`} type="button" onClick={() => setTerminalDock("monitor")}>
                       <span className="tt-vital-k">CPU</span>
                       <span className="tt-vital-v">{terminalCPU}%</span>
                       <span className="tt-spark" aria-hidden="true">
@@ -2675,7 +3683,7 @@ export default function App() {
                         ))}
                       </span>
                     </button>
-                    <button className="tt-vital mem" type="button" onClick={() => setTerminalDock("monitor")}>
+                    <button className={`tt-vital ${metricTone(terminalMemory)} mem`} type="button" onClick={() => setTerminalDock("monitor")}>
                       <span className="tt-vital-k">MEM</span>
                       <span className="tt-vital-v">{terminalMemory}%</span>
                     </button>
@@ -2701,7 +3709,12 @@ export default function App() {
                 <button
                   className={`tt-btn${terminalDock === "files" ? " active" : ""}`}
                   type="button"
-                  onClick={() => setTerminalDock((current) => (current === "files" ? null : "files"))}
+                  onClick={() => {
+                    setTerminalDock((current) => (current === "files" ? null : "files"));
+                    if (terminalDock !== "files") {
+                      void refreshRemoteFiles();
+                    }
+                  }}
                 >
                   <Icon name="files" size={12} />
                   Files
@@ -2709,7 +3722,12 @@ export default function App() {
                 <button
                   className={`tt-btn${terminalDock === "history" ? " active" : ""}`}
                   type="button"
-                  onClick={() => setTerminalDock((current) => (current === "history" ? null : "history"))}
+                  onClick={() => {
+                    setTerminalDock((current) => (current === "history" ? null : "history"));
+                    if (terminalDock !== "history") {
+                      void refreshCommandHistory(commandHistoryScope);
+                    }
+                  }}
                 >
                   <Icon name="list" size={12} />
                   History
@@ -2720,7 +3738,10 @@ export default function App() {
                   session={activeSession}
                   terminalBuffer={activeTerminalBuffer}
                   themeMode={theme}
+                  layoutKey={terminalLayoutKey}
                   onTerminalSizeChange={handleTerminalSizeChange}
+                  onFullscreenChange={handleTerminalFullscreenChange}
+                  onCommandCommit={(command) => void handleTerminalCommandCommit(command)}
                 />
                 {terminalDock === "monitor" ? (
                   <TerminalMonitorDock
@@ -2739,11 +3760,21 @@ export default function App() {
                   <TerminalFilesDock
                     files={remoteFiles}
                     path={remotePath}
+                    hasSession={Boolean(activeSession)}
+                    transfers={transfers}
                     onRunCommand={(command) => void handleRunTerminalCommand(command)}
-                    onRefresh={() => void refreshRemoteFiles()}
+                    onOpenFolder={(entry) => void refreshRemoteFiles(entry.path)}
+                    onOpenPath={(path) => void refreshRemoteFiles(path)}
+                    onRefresh={() => void syncRemoteFilesToTerminalCwd()}
+                    onUpload={() => void handleUploadToRemoteDirectory()}
+                    onUploadFolder={() => void handleUploadFolderToRemoteDirectory()}
+                    onNewFile={() => void handleNewFile("remote")}
+                    onNewFolder={() => void handleNewFolder("remote")}
                     onTransfer={(entry) => handleFileTransfer("remote", entry)}
                     onEdit={(entry) => void handleEditFile("remote", entry)}
                     onDelete={(entry) => void handleDeleteFile("remote", entry)}
+                    onDismissTransfer={dismissTransfer}
+                    onClearFinishedTransfers={clearFinishedTransfers}
                     onClose={() => setTerminalDock(null)}
                   />
                 ) : null}
@@ -2751,13 +3782,20 @@ export default function App() {
                   <TerminalHistoryDock
                     host={terminalDisplayHost}
                     history={commandHistory}
+                    query={commandHistoryQuery}
+                    scope={commandHistoryScope}
+                    onQueryChange={setCommandHistoryQuery}
+                    onScopeChange={(scope) => {
+                      setCommandHistoryScope(scope);
+                      void refreshCommandHistory(scope);
+                    }}
                     onRunCommand={(command) => void handleRunTerminalCommand(command)}
                     onClear={() => void handleClearActiveHistory()}
                     onClose={() => setTerminalDock(null)}
                   />
                 ) : null}
               </div>
-              {terminalSmartOpen ? (
+              {terminalSmartOpen && !activeTerminalFullscreen ? (
                 <TerminalSmartBar
                   onClose={() => setTerminalSmartOpen(false)}
                   onPick={(command) => {
@@ -2766,59 +3804,61 @@ export default function App() {
                   }}
                 />
               ) : null}
-              {terminalBroadcast ? (
+              {terminalBroadcast && !activeTerminalFullscreen ? (
                 <div className="bcast-banner">
                   <Icon name="network" size={12} />
                   Broadcasting — Enter sends this command to {sessions.filter((session) => session.status === "connected").length} connected sessions
                   <button type="button" onClick={() => setTerminalBroadcast(false)}>turn off</button>
                 </div>
               ) : null}
-              <div className="term-input-row">
-                <span className="term-prompt-label">
-                  <span className="t-user">{terminalDisplayUser}</span>
-                  <span className="t-muted">@</span>
-                  <span className="t-host">{terminalDisplayHost}</span>
-                  <span className="t-muted">:</span>
-                  <span className="t-path">{terminalDisplayPath}</span>
-                  <span className="t-prompt"> # </span>
-                </span>
-                <input
-                  className="term-input"
-                  name="terminal-command"
-                  aria-label="Command input"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={terminalCommand}
-                  onChange={(event) => setTerminalCommand(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    const command = terminalCommand.trim();
-                    if (!command) {
-                      return;
-                    }
-                    void handleRunTerminalCommand(command);
-                  }}
-                />
-                <button
-                  className={`tir-btn${terminalSmartOpen ? " active" : ""}`}
-                  type="button"
-                  title="Smart suggestions (⌘J)"
-                  onClick={() => setTerminalSmartOpen((current) => !current)}
-                >
-                  <Icon name="zap" size={14} />
-                </button>
-                <button
-                  className={`tir-btn${terminalBroadcast ? " active bcast" : ""}`}
-                  type="button"
-                  title="Broadcast input to all connected sessions"
-                  onClick={() => setTerminalBroadcast((current) => !current)}
-                >
-                  <Icon name="network" size={14} />
-                  {terminalBroadcast ? <span className="tir-lab">ALL</span> : null}
-                </button>
-              </div>
+              {!activeTerminalFullscreen ? (
+                <div className="term-input-row">
+                  <span className="term-prompt-label">
+                    <span className="t-user">{terminalDisplayUser}</span>
+                    <span className="t-muted">@</span>
+                    <span className="t-host">{terminalDisplayHost}</span>
+                    <span className="t-muted">:</span>
+                    <span className="t-path">{terminalDisplayPath}</span>
+                    <span className="t-prompt"> # </span>
+                  </span>
+                  <input
+                    className="term-input"
+                    name="terminal-command"
+                    aria-label="Command input"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={terminalCommand}
+                    onChange={(event) => setTerminalCommand(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") {
+                        return;
+                      }
+                      const command = terminalCommand.trim();
+                      if (!command) {
+                        return;
+                      }
+                      void handleRunTerminalCommand(command);
+                    }}
+                  />
+                  <button
+                    className={`tir-btn${terminalSmartOpen ? " active" : ""}`}
+                    type="button"
+                    title="Smart suggestions (⌘J)"
+                    onClick={() => setTerminalSmartOpen((current) => !current)}
+                  >
+                    <Icon name="zap" size={14} />
+                  </button>
+                  <button
+                    className={`tir-btn${terminalBroadcast ? " active bcast" : ""}`}
+                    type="button"
+                    title="Broadcast input to all connected sessions"
+                    onClick={() => setTerminalBroadcast((current) => !current)}
+                  >
+                    <Icon name="network" size={14} />
+                    {terminalBroadcast ? <span className="tir-lab">ALL</span> : null}
+                  </button>
+                </div>
+              ) : null}
             </section>
           ) : (
             <section className="placeholder-view">
@@ -2839,11 +3879,24 @@ export default function App() {
                 onRemoteUp={() => void refreshRemoteFiles(parentPath(remotePath))}
                 onLocalRefresh={() => void refreshLocalFiles()}
                 onRemoteRefresh={() => void refreshRemoteFiles()}
+                onNewFile={(side) => void handleNewFile(side)}
                 onNewFolder={(side) => void handleNewFolder(side)}
+                onUploadFolder={() => void handleUploadFolderToRemoteDirectory()}
+                onOpenFolder={(side, entry) => {
+                  if (!entry.isDir) {
+                    return;
+                  }
+                  void (side === "local" ? refreshLocalFiles(entry.path) : refreshRemoteFiles(entry.path));
+                }}
+                onOpenPath={(side, path) => void (side === "local" ? refreshLocalFiles(path) : refreshRemoteFiles(path))}
                 onTransfer={handleFileTransfer}
+                onTransferMany={(side, entries) => void handleFileTransfers(side, entries)}
                 onEditFile={(side, entry) => void handleEditFile(side, entry)}
                 onRenameFile={(side, entry) => void handleRenameFile(side, entry)}
                 onDeleteFile={(side, entry) => void handleDeleteFile(side, entry)}
+                onDeleteFiles={(side, entries) => void handleDeleteFiles(side, entries)}
+                onDismissTransfer={dismissTransfer}
+                onClearFinishedTransfers={clearFinishedTransfers}
                 onCreateSavedCommand={() => void handleCreateSavedCommand()}
                 onToggleCommandPin={(command) => void handleToggleCommandPin(command)}
               />
@@ -2852,13 +3905,15 @@ export default function App() {
         </main>
       </div>
 
-      <StatusBar
-        status={status}
-        sessions={sessions}
-        activeSession={activeSession}
-        activeConnection={activeConnection}
-        backendAvailable={backendAvailable}
-      />
+      {!hideStatusBar ? (
+        <StatusBar
+          status={status}
+          sessions={sessions}
+          activeSession={activeSession}
+          activeConnection={activeConnection}
+          backendAvailable={backendAvailable}
+        />
+      ) : null}
 
       {isModalOpen ? (
         <ConnectionModal
@@ -2868,6 +3923,14 @@ export default function App() {
             setIsModalOpen(false);
           }}
           onSave={handleSaveConnection}
+        />
+      ) : null}
+      {pendingDeleteConnection ? (
+        <DeleteConnectionConfirm
+          connection={pendingDeleteConnection}
+          deleting={deletingConnectionId === pendingDeleteConnection.id}
+          onCancel={() => setPendingDeleteConnection(null)}
+          onConfirm={() => void confirmDeleteConnection(pendingDeleteConnection)}
         />
       ) : null}
       {fileEditor ? (
