@@ -197,14 +197,7 @@ func (s *Service) ListSavedCommands() ([]domain.SavedCommand, error) {
 	if s == nil || s.store == nil {
 		return nil, errStoreUnavailable
 	}
-	commands, err := s.store.ListSavedCommands()
-	if err != nil {
-		return nil, err
-	}
-	if len(commands) > 0 {
-		return commands, nil
-	}
-	return seedDefaultCommands(s.store)
+	return s.store.ListSavedCommands()
 }
 
 func (s *Service) SaveSavedCommand(input domain.SaveSavedCommandInput) (domain.SavedCommand, error) {
@@ -468,21 +461,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func seedDefaultCommands(store *storage.Store) ([]domain.SavedCommand, error) {
-	defaults := []domain.SaveSavedCommandInput{
-		{Name: "Check nginx status", Command: "systemctl status nginx", Description: "View nginx service status and recent logs", Tags: []string{"global", "server"}},
-		{Name: "Tail access log", Command: "tail -f /var/log/nginx/access.log", Description: "Stream nginx access log in real time", Tags: []string{"global", "log"}},
-		{Name: "Check disk usage", Command: "df -h", Description: "Show mounted filesystem usage", Tags: []string{"global"}},
-		{Name: "Docker containers", Command: `docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"`, Description: "List running containers with ports", Tags: []string{"global", "docker"}},
-	}
-	for _, command := range defaults {
-		if _, err := store.SaveSavedCommand(command); err != nil {
-			return nil, err
-		}
-	}
-	return store.ListSavedCommands()
 }
 
 func listLocalFiles(path string) ([]domain.FileEntry, error) {

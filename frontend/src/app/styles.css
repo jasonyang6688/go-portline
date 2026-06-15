@@ -56,6 +56,7 @@ html,
 body,
 #root {
   height: 100%;
+  min-height: 0;
   margin: 0;
   overflow: hidden;
 }
@@ -89,7 +90,9 @@ button {
 .app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  max-height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   background: var(--crust);
   color: var(--text);
@@ -1776,6 +1779,10 @@ button {
   gap: 8px;
 }
 
+.sm-row {
+  flex-wrap: wrap;
+}
+
 .sm-head {
   margin-bottom: 0;
 }
@@ -1812,6 +1819,11 @@ button {
   color: var(--overlay0);
   font-size: 10px;
   font-weight: 600;
+}
+
+.sm-empty {
+  color: var(--overlay1);
+  font-size: 11px;
 }
 
 .bcast-banner {
@@ -2171,6 +2183,60 @@ button {
   flex-direction: column;
   gap: 14px;
   padding: 18px;
+}
+
+.new-item-card {
+  width: 420px;
+}
+
+.command-modal-card {
+  width: 560px;
+}
+
+.command-textarea {
+  min-height: 86px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.new-item-card .modal-sub {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-item-card .field {
+  margin: 0;
+}
+
+.new-item-card .field input {
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--base);
+  border: 1px solid var(--surface1);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+
+.new-item-card .field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.modal-error {
+  padding: 8px 10px;
+  color: var(--red);
+  font-size: 11.5px;
+  background: rgba(237, 135, 150, 0.08);
+  border: 1px solid rgba(237, 135, 150, 0.25);
+  border-radius: var(--r-sm);
 }
 
 .modal-foot {
@@ -3271,7 +3337,7 @@ button {
 .cmd-sidebar,
 .settings-nav {
   flex-shrink: 0;
-  width: 180px;
+  width: 220px;
   padding: 12px 8px;
   border-right: 1px solid var(--surface0);
 }
@@ -3297,6 +3363,11 @@ button {
   transition: all var(--t);
 }
 
+.cmd-nav-item {
+  align-items: flex-start;
+  min-height: 44px;
+}
+
 .cmd-nav-item:hover,
 .sn-item:hover {
   color: var(--text);
@@ -3319,6 +3390,63 @@ button {
   border-radius: 8px;
 }
 
+.cmd-scope-name,
+.cmd-scope-meta {
+  display: block;
+  max-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-scope-name {
+  color: inherit;
+  font-weight: 600;
+}
+
+.cmd-scope-meta {
+  margin-top: 1px;
+  color: var(--overlay0);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.cmd-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cmd-main-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--surface0);
+}
+
+.cmd-main-head > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.cmd-main-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.cmd-main-sub {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--overlay1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cmd-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -3327,12 +3455,38 @@ button {
   padding: 16px;
 }
 
+.cmd-empty {
+  display: flex;
+  flex-direction: column;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 180px;
+  color: var(--overlay1);
+  font-size: 13px;
+  border: 1px dashed var(--surface1);
+  border-radius: var(--r-md);
+}
+
+.cmd-empty-title {
+  color: var(--subtext1);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cmd-empty-sub {
+  max-width: 360px;
+  color: var(--overlay1);
+  font-size: 12px;
+  text-align: center;
+}
+
 .cmd-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 14px;
-  cursor: pointer;
   transition: all var(--t);
 }
 
@@ -3391,6 +3545,20 @@ button {
   cursor: pointer;
 }
 
+.cmd-run-btn.secondary {
+  color: var(--subtext0);
+  background: var(--surface0);
+}
+
+.cmd-run-btn.danger {
+  color: var(--red);
+  background: rgba(237, 135, 150, 0.12);
+}
+
+.cmd-run-btn.danger:hover {
+  background: rgba(237, 135, 150, 0.2);
+}
+
 .cmd-pin {
   display: flex;
   align-items: center;
@@ -3404,6 +3572,11 @@ button {
   border-radius: 7px;
   cursor: pointer;
   transition: all var(--t);
+}
+
+.cmd-pin:disabled {
+  cursor: default;
+  opacity: 0.75;
 }
 
 .cmd-pin:hover {

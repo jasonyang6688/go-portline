@@ -313,6 +313,37 @@ func TestRunCommandWritesTerminalAndRecordsHistory(t *testing.T) {
 	}
 }
 
+func TestListSavedCommandsReturnsStoredCommandsOnly(t *testing.T) {
+	store := newTestStore(t)
+	service := NewService(store, nil, nil)
+
+	commands, err := service.ListSavedCommands()
+	if err != nil {
+		t.Fatalf("ListSavedCommands(empty) error = %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("commands length = %d, want no implicit defaults", len(commands))
+	}
+
+	saved, err := service.SaveSavedCommand(domain.SaveSavedCommandInput{
+		Name:        "Check disk",
+		Command:     "df -h",
+		Description: "Show mounted filesystem usage",
+		Tags:        []string{"global"},
+	})
+	if err != nil {
+		t.Fatalf("SaveSavedCommand() error = %v", err)
+	}
+
+	commands, err = service.ListSavedCommands()
+	if err != nil {
+		t.Fatalf("ListSavedCommands(saved) error = %v", err)
+	}
+	if len(commands) != 1 || commands[0].ID != saved.ID || commands[0].Command != "df -h" {
+		t.Fatalf("commands = %#v, want only saved command", commands)
+	}
+}
+
 func TestRecordCommandHistoryUsesSessionConnection(t *testing.T) {
 	store := newTestStore(t)
 	conn := saveTestConnection(t, store)
@@ -446,6 +477,44 @@ func TestLocalFileOperationsReadSaveCreateRenameDelete(t *testing.T) {
 	}
 	if info, err := os.Stat(folderPath); err != nil || !info.IsDir() {
 		t.Fatalf("created folder stat = %#v, %v", info, err)
+	}
+
+	lowercaseFolderPath := filepath.Join(root, "lowercase-folder")
+	if err := service.CreateFolder(domain.FileMutationInput{Side: domain.FileSideLocal, Path: lowercaseFolderPath}); err != nil {
+		t.Fatalf("CreateFolder(local lowercase) error = %v", err)
+	}
+	files, err := service.ListFiles(domain.FileListInput{Side: domain.FileSideLocal, Path: root})
+	if err != nil {
+		t.Fatalf("ListFiles(local) error = %v", err)
+	}
+	foundLowercaseFolder := false
+	for _, file := range files {
+		if file.Name == "lowercase-folder" && file.IsDir {
+			foundLowercaseFolder = true
+			break
+		}
+	}
+	if !foundLowercaseFolder {
+		t.Fatalf("ListFiles(local) missing lowercase-folder directory: %#v", files)
+	}
+
+	renamedLowercaseFolderPath := filepath.Join(root, "renamed-lowercase-folder")
+	if err := service.RenameFile(domain.FileRenameInput{Side: domain.FileSideLocal, Path: lowercaseFolderPath, NewPath: renamedLowercaseFolderPath}); err != nil {
+		t.Fatalf("RenameFile(local lowercase folder) error = %v", err)
+	}
+	files, err = service.ListFiles(domain.FileListInput{Side: domain.FileSideLocal, Path: root})
+	if err != nil {
+		t.Fatalf("ListFiles(local after rename) error = %v", err)
+	}
+	foundRenamedLowercaseFolder := false
+	for _, file := range files {
+		if file.Name == "renamed-lowercase-folder" && file.IsDir {
+			foundRenamedLowercaseFolder = true
+			break
+		}
+	}
+	if !foundRenamedLowercaseFolder {
+		t.Fatalf("ListFiles(local) missing renamed-lowercase-folder directory: %#v", files)
 	}
 
 	newPath := filepath.Join(root, "renamed.go")

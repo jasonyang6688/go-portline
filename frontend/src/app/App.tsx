@@ -10,6 +10,7 @@ import {
   createFolder,
   deleteConnection,
   deleteFile,
+  deleteSavedCommand,
   getMonitorSnapshot,
   getSettings,
   listCommandHistory,
@@ -736,15 +737,26 @@ type FileEditorState = {
   saving: boolean;
 };
 
-const DEMO_SAVED_COMMANDS: SavedCommand[] = [
-  { id: "demo-1", name: "Check nginx status", command: "systemctl status nginx", description: "View nginx service status and recent logs", tags: ["global", "server"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-  { id: "demo-2", name: "Tail access log", command: "tail -f /var/log/nginx/access.log", description: "Stream nginx access log in real time", tags: ["global", "log"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-  { id: "demo-3", name: "Check disk usage", command: "df -h", description: "Show mounted filesystem usage", tags: ["global"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-  { id: "demo-4", name: "Docker containers", command: 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"', description: "List running containers with ports", tags: ["global", "docker"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-  { id: "demo-5", name: "Deploy app", command: "git pull && npm run build && pm2 restart all", description: "Pull, build, and restart all PM2 processes", tags: ["server", "danger"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-  { id: "demo-6", name: "Restart a service", command: "systemctl restart {{service}}", description: "Restart a parameterized systemd service", tags: ["server", "danger", "param"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-  { id: "demo-7", name: "Tail a log file", command: "tail -n {{lines}} {{file}}", description: "Stream the last N lines of any file", tags: ["global", "log", "param"], createdAt: DEMO_NOW, updatedAt: DEMO_NOW },
-];
+type PendingFileDelete = {
+  side: "local" | "remote";
+  entries: BackendFileEntry[];
+};
+
+type PendingNewItem = {
+  side: "local" | "remote";
+  kind: "file" | "folder";
+  name: string;
+  error: string | null;
+  saving: boolean;
+};
+
+type PendingRenameItem = {
+  side: "local" | "remote";
+  entry: BackendFileEntry;
+  name: string;
+  error: string | null;
+  saving: boolean;
+};
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: "light",
@@ -779,11 +791,18 @@ const TERMINAL_ALERTS = [
 
 type TerminalDock = "monitor" | "files" | "history" | null;
 type CommandHistoryScope = "host" | "all";
+type CommandScopeKey = "global" | `connection:${string}`;
+type CommandScopeType = "global" | "connection";
+type CommandEditorRequest = {
+  command: SavedCommand | null;
+  scopeKey: CommandScopeKey;
+};
 type PendingCwdSync = {
   sessionId: string;
   output: string;
   timeoutId: number;
 };
+const CONNECTION_TAG_PREFIX = "connection:";
 
 const MONITOR_CPU_HISTORY = [72, 75, 76, 77, 78, 79, 80, 80, 79, 78, 76, 74, 78, 81, 82, 83, 84, 83, 82, 85, 86, 87, 86, 84, 82, 80, 78, 76];
 const MONITOR_NET_HISTORY = [24, 8, 25, 24, 16, 4, 7, 5, 11, 24, 9, 7, 22, 15, 26, 14, 28, 31, 27, 18, 17, 10, 21, 8, 5, 17, 31, 36];
@@ -803,8 +822,6 @@ const TERMINAL_FILES = [
   { icon: "⚙", name: "deploy.sh", size: "2.4 KB" },
   { icon: "⚙", name: "backup.sh", size: "1.8 KB" },
 ];
-const SMART_COMMANDS = ["top", "df -h", "tail -f /var/log/nginx/error.log", "systemctl status nginx"];
-
 function SparkBars({ values, color }: { values: number[]; color?: string }) {
   const max = Math.max(...values, 1);
   return (
@@ -859,6 +876,39 @@ function metricColor(value: number) {
   if (value >= 85) return "var(--red)";
   if (value >= 60) return "var(--yellow)";
   return "var(--green)";
+}
+
+function commandConnectionId(command: SavedCommand): string | null {
+  const connectionTag = command.tags.find((tag) => tag.startsWith(CONNECTION_TAG_PREFIX));
+  return connectionTag ? connectionTag.slice(CONNECTION_TAG_PREFIX.length) : null;
+}
+
+function commandScopeKey(command: SavedCommand): CommandScopeKey {
+  const connectionId = commandConnectionId(command);
+  return connectionId ? `connection:${connectionId}` : "global";
+}
+
+function scopeKeyForConnection(connectionId: string): CommandScopeKey {
+  return `connection:${connectionId}`;
+}
+
+function connectionIdFromScopeKey(scopeKey: CommandScopeKey): string | null {
+  return scopeKey.startsWith(CONNECTION_TAG_PREFIX) ? scopeKey.slice(CONNECTION_TAG_PREFIX.length) : null;
+}
+
+function commandMatchesTerminalScope(command: SavedCommand, connectionId: string | null): boolean {
+  const commandConnection = commandConnectionId(command);
+  if (commandConnection) {
+    return commandConnection === connectionId;
+  }
+  return command.tags.includes("global");
+}
+
+function commandScopeTags(existingTags: string[], scopeType: CommandScopeType, connectionId: string, danger: boolean): string[] {
+  const retained = existingTags.filter((tag) => tag !== "global" && tag !== "danger" && !tag.startsWith(CONNECTION_TAG_PREFIX));
+  const scopeTags = scopeType === "connection" ? [`${CONNECTION_TAG_PREFIX}${connectionId}`] : ["global"];
+  const dangerTags = danger ? ["danger"] : [];
+  return [...retained, ...scopeTags, ...dangerTags];
 }
 
 function TerminalMonitorDock({
@@ -949,6 +999,7 @@ function TerminalFilesDock({
   onNewFolder,
   onTransfer,
   onEdit,
+  onRename,
   onDelete,
   onDismissTransfer,
   onClearFinishedTransfers,
@@ -968,6 +1019,7 @@ function TerminalFilesDock({
   onNewFolder(): void;
   onTransfer(entry: BackendFileEntry): void;
   onEdit(entry: BackendFileEntry): void;
+  onRename(entry: BackendFileEntry): void;
   onDelete(entry: BackendFileEntry): void;
   onDismissTransfer(id: string): void;
   onClearFinishedTransfers(): void;
@@ -1076,6 +1128,12 @@ function TerminalFilesDock({
                   <Icon name="terminal" size={11} />
                 </button>
               ) : null}
+              <button className="tf-act" type="button" title="Rename" onClick={(event) => {
+                event.stopPropagation();
+                onRename(file);
+              }}>
+                <Icon name="file" size={11} />
+              </button>
               <button className="tf-act" type="button" title="Download" onClick={(event) => {
                 event.stopPropagation();
                 onTransfer(file);
@@ -1201,21 +1259,40 @@ function TerminalHistoryDock({
   );
 }
 
-function TerminalSmartBar({ onClose, onPick }: { onClose(): void; onPick(command: string): void }) {
+function TerminalSmartBar({
+  savedCommands,
+  connectionId,
+  onClose,
+  onPick,
+}: {
+  savedCommands: SavedCommand[];
+  connectionId: string | null;
+  onClose(): void;
+  onPick(command: string): void;
+}) {
+  const pinnedCommands = savedCommands.filter((command) => commandMatchesTerminalScope(command, connectionId)).slice(0, 8);
+
   return (
     <div className="term-smartbar">
       <div className="sm-head">
-        <span className="sm-title"><Icon name="zap" size={12} />Suggestions</span>
+        <span className="sm-title"><Icon name="zap" size={12} />Quick Commands</span>
         <span className="sm-kbd">⌘J</span>
         <button className="tf-icon-btn sm-close" type="button" title="Close suggestions" onClick={onClose}>
           <Icon name="close" size={11} />
         </button>
       </div>
       <div className="sm-row">
-        <span className="sm-cat">Context</span>
-        {SMART_COMMANDS.map((command) => (
-          <button className="tq-chip" type="button" key={command} onClick={() => onPick(command)}><Icon name="play" size={9} />{command}</button>
-        ))}
+        <span className="sm-cat">Scope</span>
+        {pinnedCommands.length === 0 ? (
+          <span className="sm-empty">No pinned commands</span>
+        ) : (
+          pinnedCommands.map((command) => (
+            <button className="tq-chip" type="button" key={command.id} onClick={() => onPick(command.command)} title={command.name}>
+              <Icon name="play" size={9} />
+              {command.command}
+            </button>
+          ))
+        )}
       </div>
     </div>
   );
@@ -1529,28 +1606,26 @@ function FilesView({
   const [remoteSelection, setRemoteSelection] = useState<string[]>(["nginx.conf"]);
 
   useEffect(() => {
-    if (localFiles.length === 0) {
-      setLocalSelection([]);
-      return;
-    }
     const availableNames = new Set(localFiles.map((file) => file.name));
-    const nextSelection = localSelection.filter((name) => availableNames.has(name));
-    if (nextSelection.length !== localSelection.length) {
-      setLocalSelection(nextSelection);
-    }
-  }, [localFiles, localSelection]);
+    setLocalSelection((current) => {
+      if (localFiles.length === 0) {
+        return current.length === 0 ? current : [];
+      }
+      const nextSelection = current.filter((name) => availableNames.has(name));
+      return nextSelection.length === current.length ? current : nextSelection;
+    });
+  }, [localFiles]);
 
   useEffect(() => {
-    if (remoteFiles.length === 0) {
-      setRemoteSelection([]);
-      return;
-    }
     const availableNames = new Set(remoteFiles.map((file) => file.name));
-    const nextSelection = remoteSelection.filter((name) => availableNames.has(name));
-    if (nextSelection.length !== remoteSelection.length) {
-      setRemoteSelection(nextSelection);
-    }
-  }, [remoteFiles, remoteSelection]);
+    setRemoteSelection((current) => {
+      if (remoteFiles.length === 0) {
+        return current.length === 0 ? current : [];
+      }
+      const nextSelection = current.filter((name) => availableNames.has(name));
+      return nextSelection.length === current.length ? current : nextSelection;
+    });
+  }, [remoteFiles]);
 
   const toggleLocalSelection = (name: string) => {
     setLocalSelection((current) =>
@@ -1753,6 +1828,209 @@ function DeleteConnectionConfirm({
   );
 }
 
+function FileDeleteConfirm({
+  pendingDelete,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  pendingDelete: PendingFileDelete;
+  deleting: boolean;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  const { side, entries } = pendingDelete;
+  const singleEntry = entries.length === 1 ? entries[0] : null;
+  const title = entries.length === 1 ? `Delete ${singleEntry?.isDir ? "Folder" : "File"}` : "Delete Items";
+  const subtitle =
+    side === "remote"
+      ? "This removes the selected remote item from the active SSH session."
+      : "This removes the selected local item from disk.";
+
+  return (
+    <div className="danger-overlay" role="presentation" onMouseDown={deleting ? undefined : onCancel}>
+      <section
+        className="danger-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-file-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="danger-head">
+          <span className="danger-icon">
+            <Icon name="trash" size={16} />
+          </span>
+          <div>
+            <div className="danger-title" id="delete-file-title">{title}</div>
+            <div className="danger-sub">{subtitle}</div>
+          </div>
+        </header>
+        <div className="danger-target">
+          <span className="danger-target-name">
+            {singleEntry ? singleEntry.name : `${entries.length} ${side} items`}
+          </span>
+          <span>{singleEntry ? singleEntry.path : entries.map((entry) => entry.name).join(", ")}</span>
+        </div>
+        <footer className="danger-actions">
+          <button className="btn" type="button" onClick={onCancel} disabled={deleting}>
+            Cancel
+          </button>
+          <button className="btn danger" type="button" onClick={onConfirm} disabled={deleting}>
+            {deleting ? "Deleting..." : "Delete"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function NewFileItemModal({
+  pendingItem,
+  basePath,
+  onChangeName,
+  onCancel,
+  onConfirm,
+}: {
+  pendingItem: PendingNewItem;
+  basePath: string;
+  onChangeName(name: string): void;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const title = `New ${pendingItem.side} ${pendingItem.kind}`;
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onConfirm();
+  };
+
+  return (
+    <div className="tf-overlay" role="presentation" onMouseDown={pendingItem.saving ? undefined : onCancel}>
+      <section
+        className="modal-card new-item-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-file-item-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="modal-head">
+          <span className="modal-head-icon">
+            <Icon name={pendingItem.kind === "file" ? "file" : "files"} size={16} />
+          </span>
+          <div>
+            <div className="modal-title" id="new-file-item-title">{title}</div>
+            <div className="modal-sub">{basePath}</div>
+          </div>
+        </header>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <label className="field">
+              <span>Name</span>
+              <input
+                ref={inputRef}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={pendingItem.name}
+                onChange={(event) => onChangeName(event.target.value)}
+                placeholder={pendingItem.kind === "file" ? "example.txt" : "new-folder"}
+              />
+            </label>
+            {pendingItem.error ? <div className="modal-error">{pendingItem.error}</div> : null}
+          </div>
+          <footer className="modal-foot">
+            <button className="btn" type="button" onClick={onCancel} disabled={pendingItem.saving}>
+              Cancel
+            </button>
+            <button className="btn primary" type="submit" disabled={pendingItem.saving}>
+              {pendingItem.saving ? "Creating..." : "Create"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function RenameFileItemModal({
+  pendingItem,
+  onChangeName,
+  onCancel,
+  onConfirm,
+}: {
+  pendingItem: PendingRenameItem;
+  onChangeName(name: string): void;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const kind = pendingItem.entry.isDir ? "folder" : "file";
+  const title = `Rename ${pendingItem.side} ${kind}`;
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onConfirm();
+  };
+
+  return (
+    <div className="tf-overlay" role="presentation" onMouseDown={pendingItem.saving ? undefined : onCancel}>
+      <section
+        className="modal-card new-item-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-file-item-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="modal-head">
+          <span className="modal-head-icon">
+            <Icon name={pendingItem.entry.isDir ? "files" : "file"} size={16} />
+          </span>
+          <div>
+            <div className="modal-title" id="rename-file-item-title">{title}</div>
+            <div className="modal-sub">{pendingItem.entry.path}</div>
+          </div>
+        </header>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <label className="field">
+              <span>Name</span>
+              <input
+                ref={inputRef}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={pendingItem.name}
+                onChange={(event) => onChangeName(event.target.value)}
+              />
+            </label>
+            {pendingItem.error ? <div className="modal-error">{pendingItem.error}</div> : null}
+          </div>
+          <footer className="modal-foot">
+            <button className="btn" type="button" onClick={onCancel} disabled={pendingItem.saving}>
+              Cancel
+            </button>
+            <button className="btn primary" type="submit" disabled={pendingItem.saving}>
+              {pendingItem.saving ? "Renaming..." : "Rename"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function MonitorView({ snapshot }: { snapshot: MonitorSnapshot | null }) {
   const cpu = snapshot?.cpuPercent ?? 18;
   const mem = snapshot?.memoryPercent ?? 62;
@@ -1826,79 +2104,293 @@ function MonitorView({ snapshot }: { snapshot: MonitorSnapshot | null }) {
 
 function CommandsView({
   savedCommands,
+  connections,
   onRun,
   onCreate,
+  onEdit,
+  onDelete,
   onTogglePin,
 }: {
   savedCommands: SavedCommand[];
+  connections: Connection[];
   onRun(command: string): void;
-  onCreate(): void;
+  onCreate(scopeKey: CommandScopeKey): void;
+  onEdit(command: SavedCommand): void;
+  onDelete(command: SavedCommand): void;
   onTogglePin(command: SavedCommand): void;
 }) {
-  const [activeTag, setActiveTag] = useState("all");
-  const commandCountByTag = (tag: string) =>
-    savedCommands.filter((command) => tag === "all" || command.tags.includes(tag)).length;
-  const nav = [
-    ["all", "All Commands", commandCountByTag("all")],
-    ["global", "Global", commandCountByTag("global")],
-    ["server", "Server-scoped", commandCountByTag("server")],
-    ["log", "Log", commandCountByTag("log")],
-    ["docker", "Docker", commandCountByTag("docker")],
-    ["danger", "Destructive", commandCountByTag("danger")],
-  ] as const;
-  const commands = savedCommands.filter((command) => activeTag === "all" || command.tags.includes(activeTag));
+  const [activeScope, setActiveScope] = useState<CommandScopeKey>("global");
+  const activeConnectionId = connectionIdFromScopeKey(activeScope);
+  const activeConnection = activeConnectionId ? connections.find((connection) => connection.id === activeConnectionId) ?? null : null;
+  const commands = savedCommands.filter((command) => commandScopeKey(command) === activeScope);
+  const scopeTitle = activeConnection ? activeConnection.name : "Global Commands";
+  const scopeSubtitle = activeConnection
+    ? `${activeConnection.username}@${activeConnection.host}:${activeConnection.port}`
+    : "Available from every terminal session";
+  const globalCount = savedCommands.filter((command) => commandScopeKey(command) === "global").length;
+  const countForConnection = (connectionId: string) =>
+    savedCommands.filter((command) => commandScopeKey(command) === scopeKeyForConnection(connectionId)).length;
 
   return (
     <section className="view-stack">
       <div className="view-header">
         <Icon name="commands" size={16} />
         <span className="view-header-title">Command Library</span>
-        <button className="view-btn primary" type="button" onClick={onCreate}><Icon name="plus" size={13} />New Command</button>
+        <button className="view-btn primary" type="button" onClick={() => onCreate(activeScope)}><Icon name="plus" size={13} />New Command</button>
       </div>
       <div className="cmd-wrap">
-        <aside className="cmd-sidebar">
-          {nav.map(([id, item, count]) => (
-            <button
-              className={`cmd-nav-item${activeTag === id ? " active" : ""}`}
-              type="button"
-              key={id}
-              onClick={() => setActiveTag(id)}
-            >
-              <Icon name={id === "danger" ? "shield" : id === "server" ? "network" : "list"} size={14} />
-              {item}
-              <span className="cmd-count">{count}</span>
-            </button>
-          ))}
+        <aside className="cmd-sidebar" aria-label="Command scopes">
+          <button
+            className={`cmd-nav-item cmd-scope-main${activeScope === "global" ? " active" : ""}`}
+            type="button"
+            onClick={() => setActiveScope("global")}
+          >
+            <Icon name="list" size={14} />
+            <span>
+              <span className="cmd-scope-name">Global Commands</span>
+              <span className="cmd-scope-meta">All terminals</span>
+            </span>
+            <span className="cmd-count">{globalCount}</span>
+          </button>
+          {connections.map((connection) => {
+            const scopeKey = scopeKeyForConnection(connection.id);
+            return (
+              <button
+                className={`cmd-nav-item${activeScope === scopeKey ? " active" : ""}`}
+                type="button"
+                key={connection.id}
+                onClick={() => setActiveScope(scopeKey)}
+              >
+                <Icon name={connection.tags.includes("wsl") ? "terminal" : "network"} size={14} />
+                <span>
+                  <span className="cmd-scope-name">{connection.name}</span>
+                  <span className="cmd-scope-meta">{connection.username}@{connection.host}</span>
+                </span>
+                <span className="cmd-count">{countForConnection(connection.id)}</span>
+              </button>
+            );
+          })}
         </aside>
-        <div className="cmd-grid">
-          {commands.map((command) => (
-            <article className={`cmd-card${command.tags.includes("global") ? " pinned" : ""}`} key={command.id}>
-              <div className="cmd-card-head">
-                <div className="cmd-card-name">{command.name}</div>
-                <button
-                  className={`cmd-pin${command.tags.includes("global") ? " on" : ""}`}
-                  type="button"
-                  title="Pin to Quick bar"
-                  onClick={() => onTogglePin(command)}
-                >
-                  <Icon name="pin" size={13} />
-                </button>
-              </div>
-              <code className="cmd-card-code">{command.command}</code>
-              <div className="cmd-card-desc">{command.description}</div>
-              <div className="cmd-card-footer">
-                {command.tags.map((tag) => (
-                  <span className={`tag tag-${tag === "danger" ? "danger" : tag === "param" ? "param" : tag === "global" ? "global" : "server"}`} key={tag}>{tag}</span>
-                ))}
-                <button className="cmd-run-btn" type="button" onClick={() => onRun(command.command)}>
-                  <Icon name="play" size={10} />{command.tags.includes("param") ? "Run..." : "Run"}
-                </button>
-              </div>
-            </article>
-          ))}
+        <div className="cmd-main">
+          <div className="cmd-main-head">
+            <div>
+              <div className="cmd-main-title">{scopeTitle}</div>
+              <div className="cmd-main-sub">{scopeSubtitle}</div>
+            </div>
+            <button className="view-btn" type="button" onClick={() => onCreate(activeScope)}>
+              <Icon name="plus" size={13} />Add here
+            </button>
+          </div>
+          <div className="cmd-grid">
+          {commands.length === 0 ? (
+            <div className="cmd-empty">
+              <div className="cmd-empty-title">No commands in this scope</div>
+              <div className="cmd-empty-sub">Save reusable shell commands for {activeConnection ? activeConnection.name : "all connections"}.</div>
+              <button className="view-btn primary" type="button" onClick={() => onCreate(activeScope)}>
+                <Icon name="plus" size={13} />Create command
+              </button>
+            </div>
+          ) : (
+            commands.map((command) => {
+              const isGlobal = commandScopeKey(command) === "global";
+              return (
+                <article className={`cmd-card${isGlobal ? " pinned" : ""}`} key={command.id}>
+                  <div className="cmd-card-head">
+                    <div className="cmd-card-name">{command.name}</div>
+                    <button
+                      className={`cmd-pin${isGlobal ? " on" : ""}`}
+                      type="button"
+                      title={isGlobal ? "Global command" : "Make global"}
+                      disabled={isGlobal}
+                      onClick={() => onTogglePin(command)}
+                    >
+                      <Icon name="pin" size={13} />
+                    </button>
+                  </div>
+                  <code className="cmd-card-code">{command.command}</code>
+                  <div className="cmd-card-desc">{command.description}</div>
+                  <div className="cmd-card-footer">
+                    {command.tags.map((tag) => (
+                      <span className={`tag tag-${tag === "danger" ? "danger" : tag === "param" ? "param" : tag === "global" ? "global" : tag.startsWith(CONNECTION_TAG_PREFIX) ? "server" : "server"}`} key={tag}>
+                        {tag.startsWith(CONNECTION_TAG_PREFIX) ? "host" : tag}
+                      </span>
+                    ))}
+                    <button className="cmd-run-btn secondary" type="button" onClick={() => onEdit(command)}>
+                      <Icon name="edit" size={10} />Edit
+                    </button>
+                    <button className="cmd-run-btn danger" type="button" onClick={() => onDelete(command)}>
+                      <Icon name="trash" size={10} />Delete
+                    </button>
+                    <button className="cmd-run-btn" type="button" onClick={() => onRun(command.command)}>
+                      <Icon name="play" size={10} />{command.tags.includes("param") ? "Run..." : "Run"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          )}
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function CommandEditorModal({
+  request,
+  connections,
+  onCancel,
+  onSave,
+}: {
+  request: CommandEditorRequest;
+  connections: Connection[];
+  onCancel(): void;
+  onSave(input: Parameters<typeof saveSavedCommand>[0]): Promise<void>;
+}) {
+  const editingCommand = request.command;
+  const initialConnectionId = editingCommand ? commandConnectionId(editingCommand) : connectionIdFromScopeKey(request.scopeKey);
+  const [name, setName] = useState(editingCommand?.name ?? "");
+  const [command, setCommand] = useState(editingCommand?.command ?? "");
+  const [description, setDescription] = useState(editingCommand?.description ?? "");
+  const [scopeType, setScopeType] = useState<CommandScopeType>(initialConnectionId ? "connection" : "global");
+  const [connectionId, setConnectionId] = useState(initialConnectionId ?? connections[0]?.id ?? "");
+  const [danger, setDanger] = useState(editingCommand?.tags.includes("danger") ?? false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const isEditing = editingCommand !== null;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!name.trim() || !command.trim()) {
+      setError("Name and command are required.");
+      return;
+    }
+    if (scopeType === "connection" && !connectionId) {
+      setError("Choose a connection for this command.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onSave({
+        id: editingCommand?.id,
+        name: name.trim(),
+        command: command.trim(),
+        description: description.trim(),
+        tags: commandScopeTags(editingCommand?.tags ?? [], scopeType, connectionId, danger),
+      });
+    } catch (saveError) {
+      setError(messageFromError(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="tf-overlay" role="presentation" onMouseDown={saving ? undefined : onCancel}>
+      <form className="modal-card command-modal-card" onSubmit={handleSubmit} aria-labelledby="command-modal-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="modal-head">
+          <div className="modal-head-icon"><Icon name="commands" size={14} /></div>
+          <div>
+            <div className="modal-title" id="command-modal-title">{isEditing ? "Edit Command" : "New Command"}</div>
+            <div className="modal-sub">Choose whether this command is global or tied to one connection</div>
+          </div>
+          <button className="tf-icon-btn" type="button" onClick={onCancel} aria-label="Close command modal" title="Close command modal">
+            <Icon name="close" size={12} />
+          </button>
+        </header>
+
+        <div className="modal-body">
+          {error ? <div className="modal-error">{error}</div> : null}
+          <label className="field">
+            <span className="field-label">Name</span>
+            <input className="field-input" name="command-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Restart nginx" autoFocus required />
+          </label>
+          <label className="field">
+            <span className="field-label">Command</span>
+            <textarea className="field-input command-textarea" name="command-body" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="systemctl restart nginx" required />
+          </label>
+          <label className="field">
+            <span className="field-label">Description</span>
+            <input className="field-input" name="command-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Short note shown in the command library" />
+          </label>
+          <div className="field">
+            <span className="field-label">Scope</span>
+            <div className="seg-control">
+              <button className={`seg-opt${scopeType === "global" ? " on" : ""}`} type="button" onClick={() => setScopeType("global")}>Global</button>
+              <button className={`seg-opt${scopeType === "connection" ? " on" : ""}`} type="button" onClick={() => setScopeType("connection")}>Connection</button>
+            </div>
+          </div>
+          {scopeType === "connection" ? (
+            <label className="field">
+              <span className="field-label">Connection</span>
+              <select className="field-input" name="command-connection" value={connectionId} onChange={(event) => setConnectionId(event.target.value)} required>
+                {connections.map((connection) => (
+                  <option value={connection.id} key={connection.id}>{connection.name} · {connection.username}@{connection.host}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <label className="auth-check">
+            <input type="checkbox" checked={danger} onChange={(event) => setDanger(event.target.checked)} />
+            Mark as destructive
+          </label>
+        </div>
+
+        <footer className="modal-foot">
+          <button className="btn" type="button" onClick={onCancel}>Cancel</button>
+          <button className="btn primary" type="submit" disabled={saving || !name.trim() || !command.trim()}>
+            {saving ? "Saving..." : isEditing ? "Save changes" : "Save command"}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
+function CommandDeleteConfirm({
+  command,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  command: SavedCommand;
+  deleting: boolean;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  return (
+    <div className="danger-overlay" role="presentation" onMouseDown={deleting ? undefined : onCancel}>
+      <section
+        className="danger-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-command-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="danger-head">
+          <span className="danger-icon">
+            <Icon name="trash" size={16} />
+          </span>
+          <div>
+            <div className="danger-title" id="delete-command-title">Delete Command</div>
+            <div className="danger-sub">This removes the saved shortcut from the command library.</div>
+          </div>
+        </header>
+        <div className="danger-target">
+          <span className="danger-target-name">{command.name}</span>
+          <span>{command.command}</span>
+        </div>
+        <footer className="danger-actions">
+          <button className="btn" type="button" onClick={onCancel} disabled={deleting}>
+            Cancel
+          </button>
+          <button className="btn danger" type="button" onClick={onConfirm} disabled={deleting}>
+            {deleting ? "Deleting..." : "Delete"}
+          </button>
+        </footer>
+      </section>
+    </div>
   );
 }
 
@@ -2090,6 +2582,7 @@ function SecondaryView({
   transfers,
   monitorSnapshot,
   savedCommands,
+  connections,
   appSettings,
   onRunCommand,
   onSaveSettings,
@@ -2111,6 +2604,8 @@ function SecondaryView({
   onDismissTransfer,
   onClearFinishedTransfers,
   onCreateSavedCommand,
+  onEditSavedCommand,
+  onDeleteSavedCommand,
   onToggleCommandPin,
 }: {
   view: ViewId;
@@ -2122,6 +2617,7 @@ function SecondaryView({
   transfers: TransferRecord[];
   monitorSnapshot: MonitorSnapshot | null;
   savedCommands: SavedCommand[];
+  connections: Connection[];
   appSettings: AppSettings;
   onRunCommand(command: string): void;
   onSaveSettings(settings: AppSettings): Promise<void> | void;
@@ -2142,7 +2638,9 @@ function SecondaryView({
   onDeleteFiles(side: "local" | "remote", entries: BackendFileEntry[]): void;
   onDismissTransfer(id: string): void;
   onClearFinishedTransfers(): void;
-  onCreateSavedCommand(): void;
+  onCreateSavedCommand(scopeKey: CommandScopeKey): void;
+  onEditSavedCommand(command: SavedCommand): void;
+  onDeleteSavedCommand(command: SavedCommand): void;
   onToggleCommandPin(command: SavedCommand): void;
 }) {
   if (view === "files") {
@@ -2178,7 +2676,17 @@ function SecondaryView({
     return <MonitorView snapshot={monitorSnapshot} />;
   }
   if (view === "commands") {
-    return <CommandsView savedCommands={savedCommands} onRun={onRunCommand} onCreate={onCreateSavedCommand} onTogglePin={onToggleCommandPin} />;
+    return (
+      <CommandsView
+        savedCommands={savedCommands}
+        connections={connections}
+        onRun={onRunCommand}
+        onCreate={onCreateSavedCommand}
+        onEdit={onEditSavedCommand}
+        onDelete={onDeleteSavedCommand}
+        onTogglePin={onToggleCommandPin}
+      />
+    );
   }
   return <SettingsView appSettings={appSettings} onSave={onSaveSettings} />;
 }
@@ -2188,7 +2696,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [terminalBuffers, setTerminalBuffers] = useState<Record<string, string>>({});
   const [fullscreenTerminalSessions, setFullscreenTerminalSessions] = useState<Record<string, boolean>>({});
-  const [savedCommands, setSavedCommands] = useState<SavedCommand[]>(DEMO_SAVED_COMMANDS);
+  const [savedCommands, setSavedCommands] = useState<SavedCommand[]>([]);
   const [commandHistory, setCommandHistory] = useState<CommandHistoryEntry[]>([]);
   const [commandHistoryQuery, setCommandHistoryQuery] = useState("");
   const [commandHistoryScope, setCommandHistoryScope] = useState<CommandHistoryScope>("host");
@@ -2220,6 +2728,13 @@ export default function App() {
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
   const [pendingDeleteConnection, setPendingDeleteConnection] = useState<Connection | null>(null);
   const [deletingConnectionId, setDeletingConnectionId] = useState<string | null>(null);
+  const [pendingNewItem, setPendingNewItem] = useState<PendingNewItem | null>(null);
+  const [pendingRenameItem, setPendingRenameItem] = useState<PendingRenameItem | null>(null);
+  const [pendingFileDelete, setPendingFileDelete] = useState<PendingFileDelete | null>(null);
+  const [commandEditor, setCommandEditor] = useState<CommandEditorRequest | null>(null);
+  const [pendingCommandDelete, setPendingCommandDelete] = useState<SavedCommand | null>(null);
+  const [deletingFiles, setDeletingFiles] = useState(false);
+  const [deletingCommandId, setDeletingCommandId] = useState<string | null>(null);
   const [terminalSize, setTerminalSize] = useState<TerminalSize>(DEFAULT_TERMINAL_SIZE);
   const clock = useClock();
 
@@ -2407,7 +2922,7 @@ export default function App() {
           setConnections(DEMO_CONNECTIONS);
           setSessions(DEMO_SESSIONS);
           setTerminalBuffers(DEMO_BUFFERS);
-          setSavedCommands(DEMO_SAVED_COMMANDS);
+          setSavedCommands([]);
           setLocalFiles(DEMO_LOCAL_FILES);
           setRemoteFiles(DEMO_REMOTE_FILES);
           setAppSettings(DEFAULT_APP_SETTINGS);
@@ -3174,81 +3689,71 @@ export default function App() {
     });
   }
 
-  async function handleNewFile(side: "local" | "remote") {
-    const name = window.prompt("New file name");
-    if (!name?.trim()) {
-      return;
-    }
-    if (!backendAvailable) {
-      setStatus("File creation requires the Wails backend");
-      return;
-    }
-    let sessionId: string | undefined;
-    if (side === "remote") {
-      const remoteSessionId = requireActiveRemoteSession();
-      if (!remoteSessionId) {
-        return;
-      }
-      sessionId = remoteSessionId;
-    }
-    const cleanName = name.trim();
-    const existingFiles = side === "local" ? localFiles : remoteFiles;
-    if (existingFiles.some((file) => file.name === cleanName) && !window.confirm(`Overwrite existing ${side} file "${cleanName}"?`)) {
-      return;
-    }
-
-    const target = joinPath(side === "local" ? localPath : remotePath, cleanName);
-    try {
-      await saveFile({ side, sessionId, path: target, content: "" });
-      setFileEditor({
-        side,
-        path: target,
-        name: cleanName,
-        language: "text",
-        originalContent: "",
-        content: "",
-        isBinary: false,
-        saving: false,
-      });
-      setStatus(`Created ${side} file: ${target}`);
-      if (side === "local") {
-        await refreshLocalFiles();
-      } else {
-        await refreshRemoteFiles();
-      }
-    } catch (error) {
-      setStatus(messageFromError(error));
-    }
+  function handleNewFile(side: "local" | "remote") {
+    setPendingNewItem({ side, kind: "file", name: "", error: null, saving: false });
   }
 
-  async function handleNewFolder(side: "local" | "remote") {
-    const name = window.prompt("New folder name");
-    if (!name?.trim()) {
+  function handleNewFolder(side: "local" | "remote") {
+    setPendingNewItem({ side, kind: "folder", name: "", error: null, saving: false });
+  }
+
+  async function confirmCreateNewItem(item: PendingNewItem) {
+    const cleanName = item.name.trim();
+    if (!cleanName) {
+      setPendingNewItem((current) => current ? { ...current, error: "Name is required" } : current);
       return;
     }
     if (!backendAvailable) {
-      setStatus("Folder creation requires the Wails backend");
+      const label = item.kind === "file" ? "File" : "Folder";
+      setPendingNewItem((current) => current ? { ...current, error: `${label} creation requires the Wails backend` } : current);
+      setStatus(`${label} creation requires the Wails backend`);
       return;
     }
+
     let sessionId: string | undefined;
-    if (side === "remote") {
+    if (item.side === "remote") {
       const remoteSessionId = requireActiveRemoteSession();
       if (!remoteSessionId) {
         return;
       }
       sessionId = remoteSessionId;
     }
-    const target = joinPath(side === "local" ? localPath : remotePath, name.trim());
+
+    const existingFiles = item.side === "local" ? localFiles : remoteFiles;
+    if (existingFiles.some((file) => file.name === cleanName)) {
+      setPendingNewItem((current) => current ? { ...current, error: `${cleanName} already exists` } : current);
+      return;
+    }
+
+    const target = joinPath(item.side === "local" ? localPath : remotePath, cleanName);
+    setPendingNewItem((current) => current ? { ...current, error: null, saving: true } : current);
     try {
-      await createFolder({ side, sessionId, path: target });
-      setStatus(`Created ${side} folder: ${target}`);
-      if (side === "local") {
+      if (item.kind === "file") {
+        await saveFile({ side: item.side, sessionId, path: target, content: "" });
+        setFileEditor({
+          side: item.side,
+          path: target,
+          name: cleanName,
+          language: "text",
+          originalContent: "",
+          content: "",
+          isBinary: false,
+          saving: false,
+        });
+      } else {
+        await createFolder({ side: item.side, sessionId, path: target });
+      }
+      setStatus(`Created ${item.side} ${item.kind}: ${target}`);
+      setPendingNewItem(null);
+      if (item.side === "local") {
         await refreshLocalFiles();
       } else {
         await refreshRemoteFiles();
       }
     } catch (error) {
-      setStatus(messageFromError(error));
+      const message = messageFromError(error);
+      setPendingNewItem((current) => current ? { ...current, error: message, saving: false } : current);
+      setStatus(message);
     }
   }
 
@@ -3286,34 +3791,56 @@ export default function App() {
     }
   }
 
-  async function handleRenameFile(side: "local" | "remote", entry: BackendFileEntry) {
-    const nextName = window.prompt(`Rename "${entry.name}" to`, entry.name);
-    if (!nextName?.trim() || nextName.trim() === entry.name) {
+  function handleRenameFile(side: "local" | "remote", entry: BackendFileEntry) {
+    setPendingRenameItem({ side, entry, name: entry.name, error: null, saving: false });
+  }
+
+  async function confirmRenameItem(item: PendingRenameItem) {
+    const nextName = item.name.trim();
+    if (!nextName) {
+      setPendingRenameItem((current) => current ? { ...current, error: "Name is required" } : current);
+      return;
+    }
+    if (nextName === item.entry.name) {
+      setPendingRenameItem(null);
       return;
     }
     if (!backendAvailable) {
+      setPendingRenameItem((current) => current ? { ...current, error: "Rename requires the Wails backend" } : current);
       setStatus("Rename requires the Wails backend");
       return;
     }
+
     let sessionId: string | undefined;
-    if (side === "remote") {
+    if (item.side === "remote") {
       const remoteSessionId = requireActiveRemoteSession();
       if (!remoteSessionId) {
         return;
       }
       sessionId = remoteSessionId;
     }
-    const newPath = joinPath(parentPath(entry.path), nextName.trim());
+
+    const existingFiles = item.side === "local" ? localFiles : remoteFiles;
+    if (existingFiles.some((file) => file.path !== item.entry.path && file.name === nextName)) {
+      setPendingRenameItem((current) => current ? { ...current, error: `${nextName} already exists` } : current);
+      return;
+    }
+
+    const newPath = joinPath(parentPath(item.entry.path), nextName);
+    setPendingRenameItem((current) => current ? { ...current, error: null, saving: true } : current);
     try {
-      await renameFile({ side, sessionId, path: entry.path, newPath });
-      setStatus(`Renamed ${entry.name} to ${nextName.trim()}`);
-      if (side === "local") {
+      await renameFile({ side: item.side, sessionId, path: item.entry.path, newPath });
+      setStatus(`Renamed ${item.entry.name} to ${nextName}`);
+      setPendingRenameItem(null);
+      if (item.side === "local") {
         await refreshLocalFiles();
       } else {
         await refreshRemoteFiles();
       }
     } catch (error) {
-      setStatus(messageFromError(error));
+      const message = messageFromError(error);
+      setPendingRenameItem((current) => current ? { ...current, error: message, saving: false } : current);
+      setStatus(message);
     }
   }
 
@@ -3327,15 +3854,14 @@ export default function App() {
       setStatus("Select files or folders to delete");
       return;
     }
-    const description =
-      selectedEntries.length === 1
-        ? `${side} ${selectedEntries[0].isDir ? "folder" : "file"} "${selectedEntries[0].name}"`
-        : `${selectedEntries.length} ${side} items`;
-    if (!window.confirm(`Delete ${description}?`)) {
-      return;
-    }
+    setPendingFileDelete({ side, entries: selectedEntries });
+  }
+
+  async function confirmDeleteFiles(pendingDelete: PendingFileDelete) {
+    const { side, entries } = pendingDelete;
     if (!backendAvailable) {
       setStatus("Delete requires the Wails backend");
+      setPendingFileDelete(null);
       return;
     }
     let sessionId: string | undefined;
@@ -3346,11 +3872,13 @@ export default function App() {
       }
       sessionId = remoteSessionId;
     }
+    setDeletingFiles(true);
     try {
-      for (const entry of selectedEntries) {
+      for (const entry of entries) {
         await deleteFile({ side, sessionId, path: entry.path });
       }
-      setStatus(selectedEntries.length === 1 ? `Deleted ${selectedEntries[0].name}` : `Deleted ${selectedEntries.length} ${side} items`);
+      setStatus(entries.length === 1 ? `Deleted ${entries[0].name}` : `Deleted ${entries.length} ${side} items`);
+      setPendingFileDelete(null);
       if (side === "local") {
         await refreshLocalFiles();
       } else {
@@ -3358,6 +3886,8 @@ export default function App() {
       }
     } catch (error) {
       setStatus(messageFromError(error));
+    } finally {
+      setDeletingFiles(false);
     }
   }
 
@@ -3407,44 +3937,60 @@ export default function App() {
     setFileEditor(null);
   }
 
-  async function handleCreateSavedCommand() {
-    const name = window.prompt("Command name");
-    if (!name?.trim()) {
-      return;
-    }
-    const command = window.prompt("Command to run");
-    if (!command?.trim()) {
-      return;
-    }
-    const description = window.prompt("Description", "") ?? "";
-    const input = {
-      name: name.trim(),
-      command: command.trim(),
-      description: description.trim(),
-      tags: ["global"],
-    };
+  function handleCreateSavedCommand(scopeKey: CommandScopeKey) {
+    setCommandEditor({ command: null, scopeKey });
+  }
+
+  function handleEditSavedCommand(command: SavedCommand) {
+    setCommandEditor({ command, scopeKey: commandScopeKey(command) });
+  }
+
+  function handleDeleteSavedCommand(command: SavedCommand) {
+    setPendingCommandDelete(command);
+  }
+
+  async function handleSaveCommandEditor(input: Parameters<typeof saveSavedCommand>[0]) {
     if (!backendAvailable) {
-      const created: SavedCommand = {
-        ...input,
-        id: `demo-command-${Date.now()}`,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setSavedCommands((current) => [...current, created]);
+      setStatus("Saved commands require the Wails backend");
       return;
     }
+    const saved = await saveSavedCommand(input);
+    setSavedCommands((current) => {
+      const existingIndex = current.findIndex((item) => item.id === saved.id);
+      const next = existingIndex >= 0
+        ? current.map((item) => (item.id === saved.id ? saved : item))
+        : [...current, saved];
+      return next.sort((left, right) => left.name.localeCompare(right.name));
+    });
+    setCommandEditor(null);
+    setStatus(`${input.id ? "Updated" : "Saved"} command: ${saved.name}`);
+  }
+
+  async function confirmDeleteSavedCommand(command: SavedCommand) {
+    if (!backendAvailable) {
+      setStatus("Deleting saved commands requires the Wails backend");
+      setPendingCommandDelete(null);
+      return;
+    }
+    setDeletingCommandId(command.id);
     try {
-      const created = await saveSavedCommand(input);
-      setSavedCommands((current) => [...current, created].sort((left, right) => left.name.localeCompare(right.name)));
-      setStatus(`Saved command: ${created.name}`);
+      await deleteSavedCommand(command.id);
+      setSavedCommands((current) => current.filter((item) => item.id !== command.id));
+      setPendingCommandDelete(null);
+      setStatus(`Deleted command: ${command.name}`);
     } catch (error) {
       setStatus(messageFromError(error));
+    } finally {
+      setDeletingCommandId(null);
     }
   }
 
   async function handleToggleCommandPin(command: SavedCommand) {
-    const hasGlobal = command.tags.includes("global");
-    const nextTags = hasGlobal ? command.tags.filter((tag) => tag !== "global") : [...command.tags, "global"];
+    const hasGlobal = commandScopeKey(command) === "global";
+    const activeConnectionForCommand = activeConnection?.id ?? connections[0]?.id ?? "";
+    const nextTags = hasGlobal
+      ? commandScopeTags(command.tags, "connection", activeConnectionForCommand, command.tags.includes("danger"))
+      : commandScopeTags(command.tags, "global", "", command.tags.includes("danger"));
     const input = {
       id: command.id,
       name: command.name,
@@ -3513,6 +4059,7 @@ export default function App() {
   const terminalCPU = monitorSnapshot?.cpuPercent ?? 0;
   const terminalMemory = monitorSnapshot?.memoryPercent ?? 0;
   const hideStatusBar = activeView === "terminal" && activeTerminalFullscreen;
+  const showConnectionSidebar = activeView !== "commands" && activeView !== "settings";
   return (
     <div className="app" data-theme={theme}>
       <header className="titlebar">
@@ -3636,32 +4183,34 @@ export default function App() {
           </button>
         </aside>
 
-        <ConnectionSidebar
-          connections={connections}
-          activeConnectionId={activeConnection?.id ?? null}
-          collapsed={sidebarCollapsed}
-          connectedConnectionIds={sessions
-            .filter((session) => session.status === "connected")
-            .map((session) => session.connectionId)}
-          onCreate={() => {
-            setEditingConnection(null);
-            setPendingDeleteConnection(null);
-            setIsModalOpen(true);
-          }}
-          onEdit={(connection) => {
-            setEditingConnection(connection);
-            setPendingDeleteConnection(null);
-            setIsModalOpen(true);
-          }}
-          onDelete={(connection) => {
-            setEditingConnection(null);
-            setIsModalOpen(false);
-            setPendingDeleteConnection(connection);
-          }}
-          onOpen={handleOpenConnection}
-          onTrustHostKey={(connection) => void handleTrustHostKeyAndOpen(connection)}
-          onRefresh={() => void refreshConnectionsFromBackend()}
-        />
+        {showConnectionSidebar ? (
+          <ConnectionSidebar
+            connections={connections}
+            activeConnectionId={activeConnection?.id ?? null}
+            collapsed={sidebarCollapsed}
+            connectedConnectionIds={sessions
+              .filter((session) => session.status === "connected")
+              .map((session) => session.connectionId)}
+            onCreate={() => {
+              setEditingConnection(null);
+              setPendingDeleteConnection(null);
+              setIsModalOpen(true);
+            }}
+            onEdit={(connection) => {
+              setEditingConnection(connection);
+              setPendingDeleteConnection(null);
+              setIsModalOpen(true);
+            }}
+            onDelete={(connection) => {
+              setEditingConnection(null);
+              setIsModalOpen(false);
+              setPendingDeleteConnection(connection);
+            }}
+            onOpen={handleOpenConnection}
+            onTrustHostKey={(connection) => void handleTrustHostKeyAndOpen(connection)}
+            onRefresh={() => void refreshConnectionsFromBackend()}
+          />
+        ) : null}
 
         <main className="main-pane">
           {activeView === "terminal" ? (
@@ -3772,6 +4321,7 @@ export default function App() {
                     onNewFolder={() => void handleNewFolder("remote")}
                     onTransfer={(entry) => handleFileTransfer("remote", entry)}
                     onEdit={(entry) => void handleEditFile("remote", entry)}
+                    onRename={(entry) => void handleRenameFile("remote", entry)}
                     onDelete={(entry) => void handleDeleteFile("remote", entry)}
                     onDismissTransfer={dismissTransfer}
                     onClearFinishedTransfers={clearFinishedTransfers}
@@ -3797,6 +4347,8 @@ export default function App() {
               </div>
               {terminalSmartOpen && !activeTerminalFullscreen ? (
                 <TerminalSmartBar
+                  savedCommands={savedCommands}
+                  connectionId={activeConnection?.id ?? null}
                   onClose={() => setTerminalSmartOpen(false)}
                   onPick={(command) => {
                     setTerminalCommand(command);
@@ -3872,6 +4424,7 @@ export default function App() {
                 transfers={transfers}
                 monitorSnapshot={monitorSnapshot}
                 savedCommands={savedCommands}
+                connections={connections}
                 appSettings={appSettings}
                 onRunCommand={(command) => void handleRunTerminalCommand(command)}
                 onSaveSettings={handleSaveAppSettings}
@@ -3897,7 +4450,9 @@ export default function App() {
                 onDeleteFiles={(side, entries) => void handleDeleteFiles(side, entries)}
                 onDismissTransfer={dismissTransfer}
                 onClearFinishedTransfers={clearFinishedTransfers}
-                onCreateSavedCommand={() => void handleCreateSavedCommand()}
+                onCreateSavedCommand={handleCreateSavedCommand}
+                onEditSavedCommand={handleEditSavedCommand}
+                onDeleteSavedCommand={handleDeleteSavedCommand}
                 onToggleCommandPin={(command) => void handleToggleCommandPin(command)}
               />
             </section>
@@ -3931,6 +4486,51 @@ export default function App() {
           deleting={deletingConnectionId === pendingDeleteConnection.id}
           onCancel={() => setPendingDeleteConnection(null)}
           onConfirm={() => void confirmDeleteConnection(pendingDeleteConnection)}
+        />
+      ) : null}
+      {pendingFileDelete ? (
+        <FileDeleteConfirm
+          pendingDelete={pendingFileDelete}
+          deleting={deletingFiles}
+          onCancel={() => setPendingFileDelete(null)}
+          onConfirm={() => void confirmDeleteFiles(pendingFileDelete)}
+        />
+      ) : null}
+      {pendingNewItem ? (
+        <NewFileItemModal
+          pendingItem={pendingNewItem}
+          basePath={pendingNewItem.side === "local" ? localPath : remotePath}
+          onChangeName={(name) =>
+            setPendingNewItem((current) => current ? { ...current, name, error: null } : current)
+          }
+          onCancel={() => setPendingNewItem(null)}
+          onConfirm={() => void confirmCreateNewItem(pendingNewItem)}
+        />
+      ) : null}
+      {pendingRenameItem ? (
+        <RenameFileItemModal
+          pendingItem={pendingRenameItem}
+          onChangeName={(name) =>
+            setPendingRenameItem((current) => current ? { ...current, name, error: null } : current)
+          }
+          onCancel={() => setPendingRenameItem(null)}
+          onConfirm={() => void confirmRenameItem(pendingRenameItem)}
+        />
+      ) : null}
+      {commandEditor ? (
+        <CommandEditorModal
+          request={commandEditor}
+          connections={connections}
+          onCancel={() => setCommandEditor(null)}
+          onSave={handleSaveCommandEditor}
+        />
+      ) : null}
+      {pendingCommandDelete ? (
+        <CommandDeleteConfirm
+          command={pendingCommandDelete}
+          deleting={deletingCommandId === pendingCommandDelete.id}
+          onCancel={() => setPendingCommandDelete(null)}
+          onConfirm={() => void confirmDeleteSavedCommand(pendingCommandDelete)}
         />
       ) : null}
       {fileEditor ? (
