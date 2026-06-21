@@ -16,7 +16,7 @@ export function StatusBar({ status, sessions, activeSession, activeConnection }:
 
   return (
     <footer className="statusbar tf-statusbar">
-      <span className="sb-seg sb-brand-seg">›_ TermFlow v0.1.4</span>
+      <span className="sb-seg sb-brand-seg">›_ Portline v0.1.4</span>
       <span className="sb-seg">
         <span className="sb-status-dot" />
         {activeSession?.name ?? status}

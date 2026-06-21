@@ -703,22 +703,9 @@ func authMethods(req ConnectRequest) ([]gossh.AuthMethod, error) {
 			return nil, err
 		}
 
-		if req.Password == "" {
-			signer, err := gossh.ParsePrivateKey(key)
-			if err != nil {
-				return nil, err
-			}
-
-			return []gossh.AuthMethod{gossh.PublicKeys(signer)}, nil
-		}
-
-		signer, err := gossh.ParsePrivateKeyWithPassphrase(key, []byte(req.Password))
+		signer, err := privateKeySigner(key, req.Password)
 		if err != nil {
-			plainSigner, plainErr := gossh.ParsePrivateKey(key)
-			if plainErr != nil {
-				return nil, err
-			}
-			signer = plainSigner
+			return nil, err
 		}
 
 		return []gossh.AuthMethod{gossh.PublicKeys(signer)}, nil
@@ -731,6 +718,37 @@ func authMethods(req ConnectRequest) ([]gossh.AuthMethod, error) {
 
 		return []gossh.AuthMethod{gossh.Password(req.Password)}, nil
 	}
+}
+
+func privateKeySigner(key []byte, passphrase string) (gossh.Signer, error) {
+	if passphrase == "" {
+		signer, err := gossh.ParsePrivateKey(key)
+		if err == nil {
+			return signer, nil
+		}
+		return parsePuTTYPrivateKeyOrOriginalError(key, err)
+	}
+
+	signer, err := gossh.ParsePrivateKeyWithPassphrase(key, []byte(passphrase))
+	if err == nil {
+		return signer, nil
+	}
+	plainSigner, plainErr := gossh.ParsePrivateKey(key)
+	if plainErr == nil {
+		return plainSigner, nil
+	}
+	return parsePuTTYPrivateKeyOrOriginalError(key, err)
+}
+
+func parsePuTTYPrivateKeyOrOriginalError(key []byte, originalErr error) (gossh.Signer, error) {
+	signer, puttyErr := parsePuTTYPrivateKey(key)
+	if puttyErr == nil {
+		return signer, nil
+	}
+	if errors.Is(puttyErr, errNotPuttyPrivateKey) {
+		return nil, originalErr
+	}
+	return nil, puttyErr
 }
 
 func hostKeyCallback(req ConnectRequest) (gossh.HostKeyCallback, error) {

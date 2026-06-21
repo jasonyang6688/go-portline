@@ -1287,9 +1287,16 @@ function TerminalSmartBar({
           <span className="sm-empty">No pinned commands</span>
         ) : (
           pinnedCommands.map((command) => (
-            <button className="tq-chip" type="button" key={command.id} onClick={() => onPick(command.command)} title={command.name}>
+            <button
+              className="tq-chip"
+              type="button"
+              key={command.id}
+              onClick={() => onPick(command.command)}
+              title={`${command.name} - ${command.command}`}
+              aria-label={`Run command ${command.name}: ${command.command}`}
+            >
               <Icon name="play" size={9} />
-              {command.command}
+              <span className="tq-chip-label">{command.name}</span>
             </button>
           ))
         )}
@@ -4065,9 +4072,14 @@ export default function App() {
       <header className="titlebar">
         <div className="tb-brand">
           <span className="tb-logo">
-            <Icon name="terminal" size={14} />
+            <svg viewBox="0 0 18 18" aria-hidden="true">
+              <rect width="18" height="18" rx="5" fill="currentColor" opacity="0.12" />
+              <path d="M4.5 6h4c2.8 0 2.8 6 5.2 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path d="M4.5 12h4.8" fill="none" stroke="var(--yellow)" strokeWidth="2" strokeLinecap="round" />
+              <path d="M12 9.5 14.5 12 12 14.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </span>
-          TermFlow
+          Portline
         </div>
         <div className="tb-tabs">
           {sessions.length === 0 ? (

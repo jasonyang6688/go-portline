@@ -277,5 +277,9 @@ export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, on
     );
   }
 
-  return <div className="terminal-canvas" ref={hostRef} onPointerDown={focusTerminal} />;
+  return (
+    <div className="terminal-canvas" onPointerDown={focusTerminal}>
+      <div className="terminal-host" ref={hostRef} />
+    </div>
+  );
 }

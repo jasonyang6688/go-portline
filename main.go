@@ -22,7 +22,7 @@ func main() {
 
 func buildAppOptions(app *App) *options.App {
 	return &options.App{
-		Title:     "TermFlow",
+		Title:     "Portline",
 		Width:     1280,
 		Height:    800,
 		MinWidth:  960,

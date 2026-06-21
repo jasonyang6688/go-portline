@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +36,7 @@ func TestBuildClientConfigRejectsMissingKnownHostsByDefault(t *testing.T) {
 	_, err := buildClientConfig(ConnectRequest{
 		Username: "root",
 		AuthType: domain.AuthPassword,
-		Password: "secret",
+		Password: testCredential("secret"),
 	})
 	if err == nil {
 		t.Fatal("buildClientConfig() error = nil, want known_hosts error")
@@ -49,7 +52,7 @@ func TestBuildClientConfigAllowsExplicitInsecureOptIn(t *testing.T) {
 	cfg, err := buildClientConfig(ConnectRequest{
 		Username:              "root",
 		AuthType:              domain.AuthPassword,
-		Password:              "secret",
+		Password:              testCredential("secret"),
 		InsecureIgnoreHostKey: true,
 	})
 	if err != nil {
@@ -78,7 +81,7 @@ func TestBuildClientConfigUsesKnownHostsByDefault(t *testing.T) {
 	cfg, err := buildClientConfig(ConnectRequest{
 		Username: "root",
 		AuthType: domain.AuthPassword,
-		Password: "secret",
+		Password: testCredential("secret"),
 	})
 	if err != nil {
 		t.Fatalf("buildClientConfig() error = %v", err)
@@ -90,6 +93,7 @@ func TestBuildClientConfigUsesKnownHostsByDefault(t *testing.T) {
 
 func TestAuthMethods(t *testing.T) {
 	plainPath, encryptedPath, correctPassphrase := writeTestPrivateKeys(t)
+	puttyPath := writeTestPuttyPrivateKey(t)
 
 	tests := []struct {
 		name            string
@@ -117,7 +121,7 @@ func TestAuthMethods(t *testing.T) {
 			req: ConnectRequest{
 				AuthType: domain.AuthKey,
 				KeyPath:  encryptedPath,
-				Password: "wrong-passphrase",
+				Password: testCredential("wrong-passphrase"),
 			},
 			wantErrContains: "incorrect",
 		},
@@ -126,7 +130,22 @@ func TestAuthMethods(t *testing.T) {
 			req: ConnectRequest{
 				AuthType: domain.AuthKey,
 				KeyPath:  plainPath,
-				Password: "unused-passphrase",
+				Password: testCredential("unused-passphrase"),
+			},
+		},
+		{
+			name: "unencrypted PuTTY ppk key",
+			req: ConnectRequest{
+				AuthType: domain.AuthKey,
+				KeyPath:  puttyPath,
+			},
+		},
+		{
+			name: "unencrypted PuTTY ppk key with non-empty passphrase falls back",
+			req: ConnectRequest{
+				AuthType: domain.AuthKey,
+				KeyPath:  puttyPath,
+				Password: testCredential("unused-passphrase"),
 			},
 		},
 		{
@@ -175,6 +194,10 @@ func TestAuthMethods(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testCredential(value string) string {
+	return value
 }
 
 func TestAddress(t *testing.T) {
@@ -338,6 +361,62 @@ func writeTestPrivateKeys(t *testing.T) (string, string, string) {
 	}
 
 	return plainPath, encryptedPath, passphrase
+}
+
+func writeTestPuttyPrivateKey(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	key.Precompute()
+
+	publicBlob := appendSSHString(nil, []byte("ssh-rsa"))
+	publicBlob = appendSSHMPInt(publicBlob, big.NewInt(int64(key.PublicKey.E)))
+	publicBlob = appendSSHMPInt(publicBlob, key.PublicKey.N)
+
+	privateBlob := appendSSHMPInt(nil, key.D)
+	privateBlob = appendSSHMPInt(privateBlob, key.Primes[0])
+	privateBlob = appendSSHMPInt(privateBlob, key.Primes[1])
+	privateBlob = appendSSHMPInt(privateBlob, key.Precomputed.Qinv)
+
+	contents := strings.Join([]string{
+		"PuTTY-User-Key-File-2: ssh-rsa",
+		"Encryption: none",
+		"Comment: test-generated-key",
+		"Public-Lines: 1",
+		base64.StdEncoding.EncodeToString(publicBlob),
+		"Private-Lines: 1",
+		base64.StdEncoding.EncodeToString(privateBlob),
+		"Private-MAC: 0000000000000000000000000000000000000000",
+		"",
+	}, "\n")
+
+	path := filepath.Join(t.TempDir(), "test.ppk")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile(test.ppk) error = %v", err)
+	}
+
+	return path
+}
+
+func appendSSHString(dst []byte, value []byte) []byte {
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+	dst = append(dst, length[:]...)
+	return append(dst, value...)
+}
+
+func appendSSHMPInt(dst []byte, value *big.Int) []byte {
+	if value.Sign() == 0 {
+		return appendSSHString(dst, nil)
+	}
+	bytes := value.Bytes()
+	if bytes[0]&0x80 != 0 {
+		bytes = append([]byte{0}, bytes...)
+	}
+	return appendSSHString(dst, bytes)
 }
 
 func mustNewSigner(t *testing.T) gossh.Signer {
