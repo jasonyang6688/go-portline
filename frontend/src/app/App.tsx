@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import { ConnectionSidebar } from "../features/connections/ConnectionSidebar";
 import { ConnectionModal } from "../features/connections/ConnectionModal";
 import { StatusBar } from "../features/status/StatusBar";
@@ -727,6 +732,7 @@ type TransferRecord = {
 };
 
 type FileEditorState = {
+  id: string;
   side: "local" | "remote";
   path: string;
   name: string;
@@ -735,6 +741,12 @@ type FileEditorState = {
   content: string;
   isBinary: boolean;
   saving: boolean;
+  hidden: boolean;
+  zIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 type PendingFileDelete = {
@@ -756,6 +768,11 @@ type PendingRenameItem = {
   name: string;
   error: string | null;
   saving: boolean;
+};
+
+type ContextMenuPoint = {
+  x: number;
+  y: number;
 };
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -993,6 +1010,7 @@ function TerminalFilesDock({
   onOpenFolder,
   onOpenPath,
   onRefresh,
+  onSync,
   onUpload,
   onUploadFolder,
   onNewFile,
@@ -1001,6 +1019,7 @@ function TerminalFilesDock({
   onEdit,
   onRename,
   onDelete,
+  onDeleteMany,
   onDismissTransfer,
   onClearFinishedTransfers,
   onClose,
@@ -1013,6 +1032,7 @@ function TerminalFilesDock({
   onOpenFolder(entry: BackendFileEntry): void;
   onOpenPath(path: string): void;
   onRefresh(): void;
+  onSync(): void;
   onUpload(): void;
   onUploadFolder(): void;
   onNewFile(): void;
@@ -1021,10 +1041,19 @@ function TerminalFilesDock({
   onEdit(entry: BackendFileEntry): void;
   onRename(entry: BackendFileEntry): void;
   onDelete(entry: BackendFileEntry): void;
+  onDeleteMany(entries: BackendFileEntry[]): void;
   onDismissTransfer(id: string): void;
   onClearFinishedTransfers(): void;
   onClose(): void;
 }) {
+  const dockRef = useRef<HTMLElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [menu, setMenu] = useState<{ point: ContextMenuPoint; entry: BackendFileEntry | null } | null>(null);
+  const [selectionActive, setSelectionActive] = useState(false);
+  const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+  const selectedEntries = files.filter((file) => selectedSet.has(file.path));
+
   const openEntry = (entry: BackendFileEntry) => {
     if (entry.isDir) {
       onOpenFolder(entry);
@@ -1037,6 +1066,48 @@ function TerminalFilesDock({
   useEffect(() => {
     setPathDraft(path);
   }, [path]);
+
+  useEffect(() => {
+    const availablePaths = new Set(files.map((file) => file.path));
+    setSelectedPaths((current) => {
+      const nextSelection = current.filter((filePath) => availablePaths.has(filePath));
+      return nextSelection.length === current.length ? current : nextSelection;
+    });
+  }, [files]);
+
+  useEffect(() => {
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (!selectionActive || isEditableEventTarget(event.target) || !dockRef.current?.contains(document.activeElement)) {
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelectedPaths(files.map((file) => file.path));
+      }
+    };
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, [files, selectionActive]);
+
+  useEffect(() => {
+    if (!menu) {
+      return;
+    }
+    const closeMenu = () => setMenu(null);
+    const closeMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    };
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("keydown", closeMenuOnEscape);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("keydown", closeMenuOnEscape);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [menu]);
 
   const handlePathSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1056,15 +1127,75 @@ function TerminalFilesDock({
     openEntry(entry);
   };
 
+  const toggleSelection = (entry: BackendFileEntry) => {
+    setSelectedPaths((current) =>
+      current.includes(entry.path) ? current.filter((filePath) => filePath !== entry.path) : [...current, entry.path],
+    );
+  };
+
+  const handleEntryClick = (event: ReactMouseEvent<HTMLDivElement>, entry: BackendFileEntry) => {
+    setSelectionActive(true);
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      toggleSelection(entry);
+      return;
+    }
+    setSelectedPaths([entry.path]);
+    openEntry(entry);
+  };
+
+  const handleListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      setSelectedPaths(files.map((file) => file.path));
+    }
+  };
+
+  const activateSelection = (event: ReactMouseEvent) => {
+    setSelectionActive(true);
+    if (isEditableEventTarget(event.target)) {
+      return;
+    }
+    listRef.current?.focus();
+  };
+
+  const openMenu = (event: ReactMouseEvent, entry: BackendFileEntry | null) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectionActive(true);
+    if (event.ctrlKey && entry) {
+      toggleSelection(entry);
+      setMenu(null);
+      return;
+    }
+    if (entry && !selectedSet.has(entry.path)) {
+      setSelectedPaths([entry.path]);
+    }
+    setMenu({ point: contextMenuPoint(event), entry });
+  };
+
+  const menuEntries = menu?.entry && selectedSet.has(menu.entry.path)
+    ? selectedEntries
+    : menu?.entry
+      ? [menu.entry]
+      : selectedEntries;
+  const menuTarget = menuEntries[0] ?? menu?.entry ?? null;
+
   return (
-    <aside className="term-files" aria-label="Files panel">
+    <aside
+      className="term-files"
+      aria-label="Files panel"
+      ref={dockRef}
+      onPointerDownCapture={activateSelection}
+      onFocusCapture={() => setSelectionActive(true)}
+      onContextMenu={(event) => openMenu(event, null)}
+    >
       <div className="tf-head">
         <span className="tf-head-title"><Icon name="files" size={13} />Files</span>
         <span className="tf-head-spacer" />
-        <button className="tf-sync" type="button" onClick={onRefresh}><Icon name="link" size={12} />Synced</button>
+        <button className="tf-sync" type="button" title="Sync with terminal path" onClick={onSync}><Icon name="link" size={12} />Sync</button>
+        <button className="tf-icon-btn" type="button" title="Refresh" onClick={onRefresh}><Icon name="refresh" size={13} /></button>
         <button className="tf-icon-btn" type="button" title="Go up" onClick={() => onOpenPath(parentPath(path))}>↑</button>
-        <button className="tf-icon-btn" type="button" title="New file" onClick={onNewFile}><Icon name="file" size={13} /></button>
-        <button className="tf-icon-btn" type="button" title="New folder" onClick={onNewFolder}><Icon name="files" size={13} /></button>
         <button className="tf-icon-btn" type="button" title="Upload local file" onClick={onUpload}><Icon name="upload" size={13} /></button>
         <button className="tf-icon-btn" type="button" title="Upload local folder" onClick={onUploadFolder}><Icon name="files" size={13} /></button>
         <button className="tf-icon-btn" type="button" title="Close panel" onClick={onClose}><Icon name="close" size={13} /></button>
@@ -1072,6 +1203,7 @@ function TerminalFilesDock({
       <form className="tf-path-edit" onSubmit={handlePathSubmit}>
         <input
           aria-label="Remote path"
+          name="terminal-remote-path"
           value={pathDraft}
           onChange={(event) => setPathDraft(event.target.value)}
         />
@@ -1084,18 +1216,25 @@ function TerminalFilesDock({
           </button>
         ))}
       </div>
-      <div className="tf-list">
+      <div
+        className="tf-list"
+        ref={listRef}
+        tabIndex={0}
+        onKeyDown={handleListKeyDown}
+        onContextMenu={(event) => openMenu(event, null)}
+      >
         {files.length === 0 ? (
           <div className="tf-empty">
             {hasSession ? "No files found at this path." : "Open an SSH session to browse remote files."}
           </div>
         ) : null}
-        {files.map((file, index) => (
+        {files.map((file) => (
           <div
             aria-label={`${file.isDir ? "Open folder" : "Edit file"} ${file.name}`}
-            className={`tf-row${index === 0 ? " selected" : ""}${file.isDir ? " dir" : ""}`}
+            className={`tf-row${selectedSet.has(file.path) ? " selected" : ""}${file.isDir ? " dir" : ""}`}
             key={file.path}
-            onClick={() => openEntry(file)}
+            onClick={(event) => handleEntryClick(event, file)}
+            onContextMenu={(event) => openMenu(event, file)}
             onKeyDown={(event) => handleEntryKeyDown(event, file)}
             role="button"
             tabIndex={0}
@@ -1140,16 +1279,68 @@ function TerminalFilesDock({
               }}>
                 <Icon name="download" size={11} />
               </button>
-              <button className="tf-act danger" type="button" title="Delete" onClick={(event) => {
-                event.stopPropagation();
-                onDelete(file);
-              }}>
-                <Icon name="trash" size={11} />
-              </button>
             </span>
           </div>
         ))}
       </div>
+      {menu ? (
+        <div
+          className="file-context-menu"
+          role="menu"
+          style={{ left: menu.point.x, top: menu.point.y }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button type="button" role="menuitem" onClick={() => {
+            setMenu(null);
+            onNewFile();
+          }}><Icon name="file" size={13} />New file</button>
+          <button type="button" role="menuitem" onClick={() => {
+            setMenu(null);
+            onNewFolder();
+          }}><Icon name="files" size={13} />New folder</button>
+          <div className="file-context-sep" />
+          <button type="button" role="menuitem" onClick={() => {
+            setMenu(null);
+            onUpload();
+          }}><Icon name="upload" size={13} />Upload file</button>
+          <button type="button" role="menuitem" onClick={() => {
+            setMenu(null);
+            onUploadFolder();
+          }}><Icon name="files" size={13} />Upload folder</button>
+          {menuTarget ? (
+            <>
+              <div className="file-context-sep" />
+              <button type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                openEntry(menuTarget);
+              }}><Icon name={menuTarget.isDir ? "files" : "edit"} size={13} />{menuTarget.isDir ? "Open" : "Edit"}</button>
+              {menuTarget.isDir ? (
+                <button type="button" role="menuitem" onClick={() => {
+                  setMenu(null);
+                  onRunCommand(`cd ${shellQuote(menuTarget.path)}`);
+                }}><Icon name="terminal" size={13} />cd here</button>
+              ) : null}
+              <button type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                onRename(menuTarget);
+              }}><Icon name="file" size={13} />Rename</button>
+              <button type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                onTransfer(menuTarget);
+              }}><Icon name="download" size={13} />Download</button>
+              <button className="danger" type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                if (menuEntries.length > 1) {
+                  onDeleteMany(menuEntries);
+                  return;
+                }
+                onDelete(menuTarget);
+              }}><Icon name="trash" size={13} />Delete{menuEntries.length > 1 ? ` ${menuEntries.length} items` : ""}</button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {transfers.length > 0 ? (
         <div className="tf-xfer-stack" aria-label="File transfer progress">
           <div className="tf-xfer-head">
@@ -1180,7 +1371,7 @@ function TerminalFilesDock({
         </div>
       ) : null}
       <div className="tf-foot">
-        <span>{files.length} items</span>
+        <span>{selectedPaths.length > 0 ? `${selectedPaths.length}/${files.length} selected` : `${files.length} items`}</span>
         <button className="tf-foot-up" type="button" onClick={onUpload}><Icon name="upload" size={11} />Upload</button>
         <button className="tf-foot-up" type="button" onClick={onUploadFolder}><Icon name="files" size={11} />Folder</button>
       </div>
@@ -1346,6 +1537,64 @@ function formatBytes(value: number | undefined): string {
   return `${current.toFixed(1)} PB`;
 }
 
+function contextMenuPoint(event: ReactMouseEvent): ContextMenuPoint {
+  return {
+    x: Math.min(event.clientX, window.innerWidth - 220),
+    y: Math.min(event.clientY, window.innerHeight - 300),
+  };
+}
+
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select" || target.isContentEditable;
+}
+
+function fileEditorId(side: "local" | "remote", path: string): string {
+  return `${side}:${path}`;
+}
+
+function defaultEditorPosition(index: number): { x: number; y: number } {
+  if (typeof window === "undefined") {
+    return { x: 280 + index * 48, y: 72 + index * 48 };
+  }
+  const x = Math.min(280 + index * 48, Math.max(16, window.innerWidth - 560));
+  const y = Math.min(72 + index * 48, Math.max(48, window.innerHeight - 220));
+  return { x, y };
+}
+
+function defaultEditorSize(): { width: number; height: number } {
+  if (typeof window === "undefined") {
+    return { width: 640, height: 640 };
+  }
+  return {
+    width: Math.max(420, Math.min(720, Math.floor(window.innerWidth * 0.48))),
+    height: Math.max(360, Math.min(640, window.innerHeight - 72)),
+  };
+}
+
+function clampEditorPosition(x: number, y: number): { x: number; y: number } {
+  if (typeof window === "undefined") {
+    return { x, y };
+  }
+  return {
+    x: Math.max(8, Math.min(x, Math.max(8, window.innerWidth - 120))),
+    y: Math.max(40, Math.min(y, Math.max(40, window.innerHeight - 120))),
+  };
+}
+
+function clampEditorSize(width: number, height: number, x: number, y: number): { width: number; height: number } {
+  if (typeof window === "undefined") {
+    return { width, height };
+  }
+  return {
+    width: Math.max(360, Math.min(width, Math.max(360, window.innerWidth - x - 8))),
+    height: Math.max(260, Math.min(height, Math.max(260, window.innerHeight - y - 34))),
+  };
+}
+
 function fileGlyph(entry: BackendFileEntry): string {
   if (entry.isDir) return "📁";
   if (entry.name.endsWith(".go")) return "🔷";
@@ -1363,6 +1612,7 @@ function FilesPane({
   selectedNames,
   onSelectSingle,
   onToggleSelection,
+  onSelectAll,
   onUp,
   onRefresh,
   onNewFile,
@@ -1384,6 +1634,7 @@ function FilesPane({
   selectedNames: string[];
   onSelectSingle(name: string): void;
   onToggleSelection(name: string): void;
+  onSelectAll(names: string[]): void;
   onUp(): void;
   onRefresh(): void;
   onNewFile(): void;
@@ -1398,16 +1649,54 @@ function FilesPane({
   onDelete(entry: BackendFileEntry): void;
   onDeleteMany(entries: BackendFileEntry[]): void;
 }) {
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const transferLabel = side === "local" ? "Upload" : "Download";
   const selectedSet = useMemo(() => new Set(selectedNames), [selectedNames]);
   const selectedEntries = rows.filter((row) => selectedSet.has(row.name));
   const selectedEntry = selectedEntries[0] ?? rows[0] ?? null;
   const activeTransferEntries = selectedEntries.length > 0 ? selectedEntries : selectedEntry ? [selectedEntry] : [];
   const [pathDraft, setPathDraft] = useState(path);
+  const [menu, setMenu] = useState<{ point: ContextMenuPoint; entry: BackendFileEntry | null } | null>(null);
+  const [selectionActive, setSelectionActive] = useState(false);
 
   useEffect(() => {
     setPathDraft(path);
   }, [path]);
+
+  useEffect(() => {
+    if (!menu) {
+      return;
+    }
+    const closeMenu = () => setMenu(null);
+    const closeMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    };
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("keydown", closeMenuOnEscape);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("keydown", closeMenuOnEscape);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (!selectionActive || isEditableEventTarget(event.target) || !paneRef.current?.contains(document.activeElement)) {
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        onSelectAll(rows.map((row) => row.name));
+      }
+    };
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, [onSelectAll, rows, selectionActive]);
 
   const handlePathSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1435,8 +1724,61 @@ function FilesPane({
     openOrSelect(entry);
   };
 
+  const handleRowClick = (event: ReactMouseEvent<HTMLDivElement>, entry: BackendFileEntry) => {
+    setSelectionActive(true);
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      onToggleSelection(entry.name);
+      return;
+    }
+    openOrSelect(entry);
+  };
+
+  const handleListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      onSelectAll(rows.map((row) => row.name));
+    }
+  };
+
+  const activateSelection = (event: ReactMouseEvent) => {
+    setSelectionActive(true);
+    if (isEditableEventTarget(event.target)) {
+      return;
+    }
+    listRef.current?.focus();
+  };
+
+  const openMenu = (event: ReactMouseEvent, entry: BackendFileEntry | null) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectionActive(true);
+    if (event.ctrlKey && entry) {
+      onToggleSelection(entry.name);
+      setMenu(null);
+      return;
+    }
+    if (entry && !selectedSet.has(entry.name)) {
+      onSelectSingle(entry.name);
+    }
+    setMenu({ point: contextMenuPoint(event), entry });
+  };
+
+  const menuEntries = menu?.entry && selectedSet.has(menu.entry.name)
+    ? selectedEntries
+    : menu?.entry
+      ? [menu.entry]
+      : selectedEntries;
+  const menuTarget = menuEntries[0] ?? menu?.entry ?? null;
+
   return (
-    <div className="files-pane">
+    <div
+      className="files-pane"
+      ref={paneRef}
+      onPointerDownCapture={activateSelection}
+      onFocusCapture={() => setSelectionActive(true)}
+      onContextMenu={(event) => openMenu(event, null)}
+    >
       <div className="files-pane-header">
         <span className={`fp-badge ${side}`}>{side}</span>
         <form className="fp-path-form" onSubmit={handlePathSubmit}>
@@ -1450,8 +1792,6 @@ function FilesPane({
         </form>
         <div className="fp-actions">
           <button className="fp-btn" type="button" title="Go up" onClick={onUp}>↑</button>
-          <button className="fp-btn" type="button" title="New file" onClick={onNewFile}><Icon name="file" size={13} /></button>
-          <button className="fp-btn" type="button" title="New folder" onClick={onNewFolder}><Icon name="files" size={13} /></button>
           {side === "local" ? (
             <button className="fp-btn" type="button" title="Upload local folder" onClick={onUploadFolder}><Icon name="files" size={13} /></button>
           ) : null}
@@ -1469,14 +1809,6 @@ function FilesPane({
           >
             <Icon name={side === "local" ? "upload" : "download"} size={12} />
           </button>
-          <button
-            className="fp-btn danger"
-            type="button"
-            title="Delete selected"
-            onClick={() => activeTransferEntries.length > 0 && onDeleteMany(activeTransferEntries)}
-          >
-            <Icon name="trash" size={12} />
-          </button>
         </div>
       </div>
       <div className="files-toolbar">
@@ -1487,12 +1819,19 @@ function FilesPane({
           </button>
         ))}
       </div>
-      <div className="files-list">
+      <div
+        className="files-list"
+        ref={listRef}
+        tabIndex={0}
+        onKeyDown={handleListKeyDown}
+        onContextMenu={(event) => openMenu(event, null)}
+      >
         {rows.map((row) => (
           <div
             className={`f-item${selectedSet.has(row.name) ? " selected" : ""}`}
             key={`${side}-${row.path}`}
-            onClick={() => openOrSelect(row)}
+            onClick={(event) => handleRowClick(event, row)}
+            onContextMenu={(event) => openMenu(event, row)}
             onDoubleClick={() => row.isDir && onOpenFolder(row)}
             onKeyDown={(event) => handleRowKeyDown(event, row)}
             role="button"
@@ -1537,16 +1876,67 @@ function FilesPane({
               }}>
                 <Icon name="file" size={13} />
               </button>
-              <button className="f-act danger" type="button" title="Delete" onClick={(event) => {
-                event.stopPropagation();
-                onDelete(row);
-              }}>
-                <Icon name="trash" size={13} />
-              </button>
             </span>
           </div>
         ))}
       </div>
+      {menu ? (
+        <div
+          className="file-context-menu"
+          role="menu"
+          style={{ left: menu.point.x, top: menu.point.y }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button type="button" role="menuitem" onClick={() => {
+            setMenu(null);
+            onNewFile();
+          }}><Icon name="file" size={13} />New file</button>
+          <button type="button" role="menuitem" onClick={() => {
+            setMenu(null);
+            onNewFolder();
+          }}><Icon name="files" size={13} />New folder</button>
+          {side === "local" ? (
+            <button type="button" role="menuitem" onClick={() => {
+              setMenu(null);
+              onUploadFolder();
+            }}><Icon name="files" size={13} />Upload folder</button>
+          ) : null}
+          {menuTarget ? (
+            <>
+              <div className="file-context-sep" />
+              <button type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                if (menuTarget.isDir) {
+                  onOpenFolder(menuTarget);
+                  return;
+                }
+                onEdit(menuTarget);
+              }}><Icon name={menuTarget.isDir ? "files" : "edit"} size={13} />{menuTarget.isDir ? "Open" : "Edit"}</button>
+              <button type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                onRename(menuTarget);
+              }}><Icon name="file" size={13} />Rename</button>
+              <button type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                if (menuEntries.length > 1) {
+                  onTransferMany(menuEntries);
+                  return;
+                }
+                onTransfer(menuTarget);
+              }}><Icon name={side === "local" ? "upload" : "download"} size={13} />{menuEntries.length > 1 ? `${transferLabel} ${menuEntries.length} items` : transferLabel}</button>
+              <button className="danger" type="button" role="menuitem" onClick={() => {
+                setMenu(null);
+                if (menuEntries.length > 1) {
+                  onDeleteMany(menuEntries);
+                  return;
+                }
+                onDelete(menuTarget);
+              }}><Icon name="trash" size={13} />Delete{menuEntries.length > 1 ? ` ${menuEntries.length} items` : ""}</button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <div className="files-status">
         <span>{rows.length} items</span>
         {selectedNames.length > 0 ? <span>Selected: <strong>{selectedNames.length}</strong></span> : null}
@@ -1661,6 +2051,7 @@ function FilesView({
           selectedNames={localSelection}
           onSelectSingle={(name) => setLocalSelection([name])}
           onToggleSelection={toggleLocalSelection}
+          onSelectAll={setLocalSelection}
           onUp={onLocalUp}
           onRefresh={onLocalRefresh}
           onNewFile={() => onNewFile("local")}
@@ -1684,6 +2075,7 @@ function FilesView({
           selectedNames={remoteSelection}
           onSelectSingle={(name) => setRemoteSelection([name])}
           onToggleSelection={toggleRemoteSelection}
+          onSelectAll={setRemoteSelection}
           onUp={onRemoteUp}
           onRefresh={onRemoteRefresh}
           onNewFile={() => onNewFile("remote")}
@@ -1729,63 +2121,244 @@ function FilesView({
   );
 }
 
-function FileEditorModal({
+function FileEditorWindow({
   editor,
   onChange,
+  onFocus,
+  onMove,
+  onResize,
+  onHide,
   onClose,
   onSave,
 }: {
   editor: FileEditorState;
   onChange(content: string): void;
+  onFocus(): void;
+  onMove(x: number, y: number): void;
+  onResize(width: number, height: number): void;
+  onHide(): void;
   onClose(): void;
   onSave(): void;
 }) {
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const resizeRef = useRef<{
+    pointerId: number;
+    mode: "right" | "bottom" | "corner";
+    startClientX: number;
+    startClientY: number;
+    startWidth: number;
+    startHeight: number;
+  } | null>(null);
   const dirty = editor.content !== editor.originalContent;
   const lineCount = Math.max(1, editor.content.split("\n").length);
   const lineNumbers = Array.from({ length: lineCount }, (_, index) => index + 1).join("\n");
 
+  const handleDragStart = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if (event.target instanceof HTMLElement && event.target.closest("button")) {
+      return;
+    }
+    event.preventDefault();
+    onFocus();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: editor.x,
+      startY: editor.y,
+    };
+  };
+
+  const handleDragMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const next = clampEditorPosition(
+      drag.startX + event.clientX - drag.startClientX,
+      drag.startY + event.clientY - drag.startClientY,
+    );
+    onMove(next.x, next.y);
+  };
+
+  const handleDragEnd = (event: ReactPointerEvent<HTMLElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleResizeStart = (mode: "right" | "bottom" | "corner", event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    onFocus();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startWidth: editor.width,
+      startHeight: editor.height,
+    };
+  };
+
+  const handleResizeMove = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) {
+      return;
+    }
+    const nextWidth =
+      resize.mode === "bottom" ? resize.startWidth : resize.startWidth + event.clientX - resize.startClientX;
+    const nextHeight =
+      resize.mode === "right" ? resize.startHeight : resize.startHeight + event.clientY - resize.startClientY;
+    const size = clampEditorSize(nextWidth, nextHeight, editor.x, editor.y);
+    onResize(size.width, size.height);
+  };
+
+  const handleResizeEnd = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (resizeRef.current?.pointerId === event.pointerId) {
+      resizeRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const stopButtonPointer = (event: ReactPointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+  };
+
+  const runWindowAction = (event: ReactPointerEvent<HTMLButtonElement>, action: () => void) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+  };
+
   return (
-    <div className="tf-overlay" role="presentation" onMouseDown={onClose}>
-      <section className="file-editor-card" role="dialog" aria-modal="true" aria-label={`Edit ${editor.name}`} onMouseDown={(event) => event.stopPropagation()}>
-        <header className="file-editor-head">
-          <div className="fe-title-block">
-            <span className={`fp-badge ${editor.side}`}>{editor.side}</span>
-            <span className="fe-title">{editor.name}</span>
-            <span className="fe-language">{editor.language}</span>
-            {dirty ? <span className="fe-dirty">unsaved</span> : null}
-          </div>
-          <button className="fp-btn" type="button" title="Close editor" onClick={onClose}>
+    <section
+      className="file-editor-card"
+      role="dialog"
+      aria-label={`Edit ${editor.name}`}
+      onMouseDown={onFocus}
+      style={{
+        zIndex: editor.zIndex,
+        left: editor.x,
+        top: editor.y,
+        width: editor.width,
+        height: editor.height,
+      }}
+    >
+      <header
+        className="file-editor-head"
+        onPointerDown={handleDragStart}
+        onPointerMove={handleDragMove}
+        onPointerUp={handleDragEnd}
+        onPointerCancel={handleDragEnd}
+      >
+        <div className="fe-title-block">
+          <span className={`fp-badge ${editor.side}`}>{editor.side}</span>
+          <span className="fe-title">{editor.name}</span>
+          <span className="fe-language">{editor.language}</span>
+          {dirty ? <span className="fe-dirty">unsaved</span> : null}
+        </div>
+        <div className="fe-window-actions">
+          <button
+            className="fp-btn"
+            type="button"
+            title="Hide editor"
+            onPointerDown={(event) => runWindowAction(event, onHide)}
+            onClick={onHide}
+          >
+            _
+          </button>
+          <button
+            className="fp-btn"
+            type="button"
+            title="Close editor"
+            onPointerDown={(event) => runWindowAction(event, onClose)}
+            onClick={onClose}
+          >
             <Icon name="close" size={14} />
           </button>
-        </header>
-        <div className="fe-path">{editor.path}</div>
-        {editor.isBinary ? (
-          <div className="fe-binary">
-            <Icon name="shield" size={18} />
-            <span>This file looks binary and is opened read-only.</span>
-          </div>
-        ) : (
-          <div className={`fe-editor language-${editor.language}`}>
-            <pre className="fe-lines" aria-hidden="true">{lineNumbers}</pre>
-            <textarea
-              className="fe-textarea"
-              name="file-editor-content"
-              spellCheck={false}
-              value={editor.content}
-              onChange={(event) => onChange(event.target.value)}
-            />
-          </div>
-        )}
-        <footer className="file-editor-foot">
-          <button className="view-btn" type="button" disabled={!dirty || editor.saving} onClick={() => onChange(editor.originalContent)}>
-            Revert
-          </button>
-          <button className="view-btn primary" type="button" disabled={!dirty || editor.saving || editor.isBinary} onClick={onSave}>
-            {editor.saving ? "Saving..." : "Save"}
-          </button>
-        </footer>
-      </section>
-    </div>
+        </div>
+      </header>
+      <div className="fe-path">{editor.path}</div>
+      {editor.isBinary ? (
+        <div className="fe-binary">
+          <Icon name="shield" size={18} />
+          <span>This file looks binary and is opened read-only.</span>
+        </div>
+      ) : (
+        <div className={`fe-editor language-${editor.language}`}>
+          <pre className="fe-lines" aria-hidden="true">{lineNumbers}</pre>
+          <textarea
+            className="fe-textarea"
+            name={`file-editor-content-${editor.id}`}
+            spellCheck={false}
+            value={editor.content}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </div>
+      )}
+      <footer className="file-editor-foot">
+        <button
+          className="view-btn"
+          type="button"
+          disabled={!dirty || editor.saving}
+          onPointerDown={stopButtonPointer}
+          onClick={() => onChange(editor.originalContent)}
+        >
+          Revert
+        </button>
+        <button
+          className="view-btn primary"
+          type="button"
+          disabled={!dirty || editor.saving || editor.isBinary}
+          onPointerDown={stopButtonPointer}
+          onClick={onSave}
+        >
+          {editor.saving ? "Saving..." : "Save"}
+        </button>
+      </footer>
+      <span
+        className="fe-resize fe-resize-right"
+        aria-hidden="true"
+        onPointerDown={(event) => handleResizeStart("right", event)}
+        onPointerMove={handleResizeMove}
+        onPointerUp={handleResizeEnd}
+        onPointerCancel={handleResizeEnd}
+      />
+      <span
+        className="fe-resize fe-resize-bottom"
+        aria-hidden="true"
+        onPointerDown={(event) => handleResizeStart("bottom", event)}
+        onPointerMove={handleResizeMove}
+        onPointerUp={handleResizeEnd}
+        onPointerCancel={handleResizeEnd}
+      />
+      <span
+        className="fe-resize fe-resize-corner"
+        aria-hidden="true"
+        onPointerDown={(event) => handleResizeStart("corner", event)}
+        onPointerMove={handleResizeMove}
+        onPointerUp={handleResizeEnd}
+        onPointerCancel={handleResizeEnd}
+      />
+    </section>
   );
 }
 
@@ -2710,13 +3283,14 @@ export default function App() {
   const [localFiles, setLocalFiles] = useState<BackendFileEntry[]>([]);
   const [remoteFiles, setRemoteFiles] = useState<BackendFileEntry[]>([]);
   const [transfers, setTransfers] = useState<TransferRecord[]>([]);
-  const [fileEditor, setFileEditor] = useState<FileEditorState | null>(null);
+  const [fileEditors, setFileEditors] = useState<FileEditorState[]>([]);
   const [monitorSnapshot, setMonitorSnapshot] = useState<MonitorSnapshot | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [localPath, setLocalPath] = useState("/Users/delong/Work/go-termflow");
   const [remotePathBySession, setRemotePathBySession] = useState<Record<string, string>>({});
   const liveSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingCwdSyncRef = useRef<PendingCwdSync | null>(null);
+  const editorZIndexRef = useRef(260);
   const refreshRemoteFilesRef = useRef<(path?: string) => Promise<void>>(async () => {});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("terminal");
@@ -3696,6 +4270,80 @@ export default function App() {
     });
   }
 
+  function nextEditorZIndex(): number {
+    editorZIndexRef.current += 1;
+    return editorZIndexRef.current;
+  }
+
+  function openFileEditor(editor: Omit<FileEditorState, "id" | "hidden" | "zIndex" | "x" | "y" | "width" | "height">) {
+    const id = fileEditorId(editor.side, editor.path);
+    const zIndex = nextEditorZIndex();
+    setFileEditors((current) => {
+      const existing = current.find((item) => item.id === id);
+      if (existing) {
+        return current.map((item) =>
+          item.id === id ? { ...item, hidden: false, zIndex } : item,
+        );
+      }
+      const position = defaultEditorPosition(current.length);
+      const size = defaultEditorSize();
+      return [...current, { ...editor, id, hidden: false, zIndex, ...position, ...size }];
+    });
+  }
+
+  function focusFileEditor(editorId: string) {
+    const zIndex = nextEditorZIndex();
+    setFileEditors((current) =>
+      current.map((editor) =>
+        editor.id === editorId ? { ...editor, hidden: false, zIndex } : editor,
+      ),
+    );
+  }
+
+  function hideFileEditor(editorId: string) {
+    setFileEditors((current) =>
+      current.map((editor) =>
+        editor.id === editorId ? { ...editor, hidden: true } : editor,
+      ),
+    );
+  }
+
+  function updateFileEditorContent(editorId: string, content: string) {
+    setFileEditors((current) =>
+      current.map((editor) =>
+        editor.id === editorId ? { ...editor, content } : editor,
+      ),
+    );
+  }
+
+  function moveFileEditor(editorId: string, x: number, y: number) {
+    setFileEditors((current) =>
+      current.map((editor) =>
+        editor.id === editorId ? { ...editor, x, y } : editor,
+      ),
+    );
+  }
+
+  function resizeFileEditor(editorId: string, width: number, height: number) {
+    setFileEditors((current) =>
+      current.map((editor) => {
+        if (editor.id !== editorId) {
+          return editor;
+        }
+        const size = clampEditorSize(width, height, editor.x, editor.y);
+        return { ...editor, ...size };
+      }),
+    );
+  }
+
+  function closeFileEditor(editorId: string) {
+    const editor = fileEditors.find((item) => item.id === editorId);
+    if (editor && editor.content !== editor.originalContent && !window.confirm("Discard unsaved file changes?")) {
+      return;
+    }
+    setFileEditors((current) => current.filter((item) => item.id !== editorId));
+  }
+
   function handleNewFile(side: "local" | "remote") {
     setPendingNewItem({ side, kind: "file", name: "", error: null, saving: false });
   }
@@ -3737,7 +4385,7 @@ export default function App() {
     try {
       if (item.kind === "file") {
         await saveFile({ side: item.side, sessionId, path: target, content: "" });
-        setFileEditor({
+        openFileEditor({
           side: item.side,
           path: target,
           name: cleanName,
@@ -3782,7 +4430,7 @@ export default function App() {
     }
     try {
       const content: FileContent = await readFile({ side, sessionId, path: entry.path });
-      setFileEditor({
+      openFileEditor({
         side,
         path: content.path,
         name: content.name,
@@ -3898,7 +4546,8 @@ export default function App() {
     }
   }
 
-  async function handleSaveEditedFile() {
+  async function handleSaveEditedFile(editorId: string) {
+    const fileEditor = fileEditors.find((editor) => editor.id === editorId);
     if (!fileEditor || fileEditor.isBinary) {
       return;
     }
@@ -3914,7 +4563,11 @@ export default function App() {
       }
       sessionId = remoteSessionId;
     }
-    setFileEditor((current) => current ? { ...current, saving: true } : current);
+    setFileEditors((current) =>
+      current.map((editor) =>
+        editor.id === editorId ? { ...editor, saving: true } : editor,
+      ),
+    );
     try {
       await saveFile({
         side: fileEditor.side,
@@ -3922,8 +4575,10 @@ export default function App() {
         path: fileEditor.path,
         content: fileEditor.content,
       });
-      setFileEditor((current) =>
-        current ? { ...current, originalContent: current.content, saving: false } : current,
+      setFileEditors((current) =>
+        current.map((editor) =>
+          editor.id === editorId ? { ...editor, originalContent: editor.content, saving: false } : editor,
+        ),
       );
       setStatus(`Saved ${fileEditor.name}`);
       if (fileEditor.side === "local") {
@@ -3932,16 +4587,13 @@ export default function App() {
         await refreshRemoteFiles();
       }
     } catch (error) {
-      setFileEditor((current) => current ? { ...current, saving: false } : current);
+      setFileEditors((current) =>
+        current.map((editor) =>
+          editor.id === editorId ? { ...editor, saving: false } : editor,
+        ),
+      );
       setStatus(messageFromError(error));
     }
-  }
-
-  function handleCloseEditor() {
-    if (fileEditor && fileEditor.content !== fileEditor.originalContent && !window.confirm("Discard unsaved file changes?")) {
-      return;
-    }
-    setFileEditor(null);
   }
 
   function handleCreateSavedCommand(scopeKey: CommandScopeKey) {
@@ -4326,7 +4978,8 @@ export default function App() {
                     onRunCommand={(command) => void handleRunTerminalCommand(command)}
                     onOpenFolder={(entry) => void refreshRemoteFiles(entry.path)}
                     onOpenPath={(path) => void refreshRemoteFiles(path)}
-                    onRefresh={() => void syncRemoteFilesToTerminalCwd()}
+                    onRefresh={() => void refreshRemoteFiles()}
+                    onSync={() => void syncRemoteFilesToTerminalCwd()}
                     onUpload={() => void handleUploadToRemoteDirectory()}
                     onUploadFolder={() => void handleUploadFolderToRemoteDirectory()}
                     onNewFile={() => void handleNewFile("remote")}
@@ -4335,6 +4988,7 @@ export default function App() {
                     onEdit={(entry) => void handleEditFile("remote", entry)}
                     onRename={(entry) => void handleRenameFile("remote", entry)}
                     onDelete={(entry) => void handleDeleteFile("remote", entry)}
+                    onDeleteMany={(entries) => void handleDeleteFiles("remote", entries)}
                     onDismissTransfer={dismissTransfer}
                     onClearFinishedTransfers={clearFinishedTransfers}
                     onClose={() => setTerminalDock(null)}
@@ -4545,13 +5199,38 @@ export default function App() {
           onConfirm={() => void confirmDeleteSavedCommand(pendingCommandDelete)}
         />
       ) : null}
-      {fileEditor ? (
-        <FileEditorModal
-          editor={fileEditor}
-          onChange={(content) => setFileEditor((current) => current ? { ...current, content } : current)}
-          onClose={handleCloseEditor}
-          onSave={() => void handleSaveEditedFile()}
+      {fileEditors.filter((editor) => !editor.hidden).map((editor) => (
+        <FileEditorWindow
+          editor={editor}
+          key={editor.id}
+          onChange={(content) => updateFileEditorContent(editor.id, content)}
+          onFocus={() => focusFileEditor(editor.id)}
+          onMove={(x, y) => moveFileEditor(editor.id, x, y)}
+          onResize={(width, height) => resizeFileEditor(editor.id, width, height)}
+          onHide={() => hideFileEditor(editor.id)}
+          onClose={() => closeFileEditor(editor.id)}
+          onSave={() => void handleSaveEditedFile(editor.id)}
         />
+      ))}
+      {fileEditors.length > 0 ? (
+        <div className="file-editor-dock" aria-label="Open files">
+          {fileEditors.map((editor) => {
+            const dirty = editor.content !== editor.originalContent;
+            return (
+              <button
+                className={`fe-dock-item${editor.hidden ? " hidden" : ""}`}
+                type="button"
+                key={editor.id}
+                onClick={() => focusFileEditor(editor.id)}
+                title={editor.path}
+              >
+                <Icon name={editor.isBinary ? "shield" : "file"} size={12} />
+                <span>{editor.name}</span>
+                {dirty ? <b aria-label="unsaved changes">•</b> : null}
+              </button>
+            );
+          })}
+        </div>
       ) : null}
       {paletteOpen ? (
         <div
