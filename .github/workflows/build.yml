@@ -1,5 +1,8 @@
 name: Build Desktop Apps
 
+env:
+  APP_NAME: Portline
+
 on:
   push:
     branches:
@@ -62,17 +65,28 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
-          Copy-Item -Path build/bin/TermFlow.exe -Destination dist/TermFlow-windows-amd64.exe
+          $appName = (Get-Content -Raw wails.json | ConvertFrom-Json).outputfilename
+          if (-not $appName) {
+            $appName = "${{ env.APP_NAME }}"
+          }
+
+          $appPath = "build/bin/$appName.exe"
+          if (-not (Test-Path $appPath)) {
+            Get-ChildItem -Path build/bin -Recurse
+            throw "Expected Windows app not found: $appPath"
+          }
+
+          Copy-Item -Path $appPath -Destination "dist/$appName-windows-amd64.exe"
           $installer = Get-ChildItem -Path build/bin -Filter "*installer*.exe" | Select-Object -First 1
           if ($installer) {
-            Copy-Item -LiteralPath $installer.FullName -Destination dist/TermFlow-windows-amd64-installer.exe
+            Copy-Item -LiteralPath $installer.FullName -Destination "dist/$appName-windows-amd64-installer.exe"
           }
-          Compress-Archive -Path dist/TermFlow-windows-amd64.exe -DestinationPath dist/TermFlow-windows-amd64-portable.zip -Force
+          Compress-Archive -Path "dist/$appName-windows-amd64.exe" -DestinationPath "dist/$appName-windows-amd64-portable.zip" -Force
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7
         with:
-          name: TermFlow-windows-amd64
+          name: ${{ env.APP_NAME }}-windows-amd64
           path: dist/*
           if-no-files-found: error
 
@@ -115,13 +129,21 @@ jobs:
       - name: Package macOS artifact
         run: |
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent build/bin/TermFlow.app dist/TermFlow-macos.zip
-          hdiutil create -volname "TermFlow" -srcfolder build/bin/TermFlow.app -ov -format UDZO dist/TermFlow-macos.dmg
+          app_name="$(node -p "require('./wails.json').outputfilename || require('./wails.json').name || '${APP_NAME}'")"
+          app_path="build/bin/${app_name}.app"
+          if [ ! -d "${app_path}" ]; then
+            find build/bin -maxdepth 2 -print
+            echo "Expected macOS app not found: ${app_path}" >&2
+            exit 1
+          fi
+
+          ditto -c -k --sequesterRsrc --keepParent "${app_path}" "dist/${app_name}-macos.zip"
+          hdiutil create -volname "${app_name}" -srcfolder "${app_path}" -ov -format UDZO "dist/${app_name}-macos.dmg"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v7
         with:
-          name: TermFlow-macos
+          name: ${{ env.APP_NAME }}-macos
           path: dist/*
           if-no-files-found: error
 
@@ -177,6 +199,6 @@ jobs:
           else
             gh release create "${release_tag}" release-files/* \
               --target "${GITHUB_SHA}" \
-              --title "TermFlow ${release_tag}" \
+              --title "${APP_NAME} ${release_tag}" \
               --notes "Desktop builds for Windows and macOS."
           fi
