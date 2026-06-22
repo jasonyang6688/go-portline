@@ -64,6 +64,8 @@ const LIGHT_TERMINAL_THEME = {
   brightWhite: "#4c4f69",
 };
 
+const MINIMUM_TERMINAL_CONTRAST_RATIO = 4.5;
+
 export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, onTerminalSizeChange, onFullscreenChange, onCommandCommit }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -104,6 +106,7 @@ export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, on
       fontFamily: '"JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace',
       fontSize: 13,
       lineHeight: 1.65,
+      minimumContrastRatio: MINIMUM_TERMINAL_CONTRAST_RATIO,
       theme: themeMode === "light" ? LIGHT_TERMINAL_THEME : DARK_TERMINAL_THEME,
     });
     const fitAddon = new FitAddon();
