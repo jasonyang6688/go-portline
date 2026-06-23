@@ -61,6 +61,27 @@ import {
   SESSION_OUTPUT_EVENT,
   SESSION_STATUS_EVENT,
 } from "../features/connections/types";
+import {
+  CWD_SYNC_COMMAND,
+  resolveCwdSyncOutput,
+} from "./cwdSyncOutput";
+import {
+  findEditorSearchMatches,
+  replaceAllEditorSearchMatches,
+  replaceEditorSearchMatch,
+} from "./fileEditorSearch";
+import {
+  CONNECTION_TAG_PREFIX,
+  commandConnectionId,
+  commandScopeKey,
+  commandScopeTags,
+  connectionIdFromScopeKey,
+  getTerminalSmartBarCommands,
+  reorderTerminalSmartBarCommands,
+  sortSavedCommands,
+  scopeKeyForConnection,
+} from "./terminalSmartBarCommands";
+import type { CommandScopeKey, CommandScopeType } from "./terminalSmartBarCommands";
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -80,6 +101,7 @@ function sortConnections(connections: Connection[]): Connection[] {
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = { cols: 120, rows: 32 };
 const DEFAULT_REMOTE_PATH = "/home/ubuntu";
+const DEFAULT_LOCAL_PATH = "/";
 const MAX_TERMINAL_BUFFER_LENGTH = 200_000;
 const DEMO_NOW = new Date().toISOString();
 const DEMO_CONNECTIONS: Connection[] = [
@@ -618,45 +640,6 @@ function normalizeRemotePath(path: string): string {
   return `/${trimmed.split("/").filter(Boolean).join("/")}`;
 }
 
-const CWD_SYNC_OSC_PREFIX = "\u001b]6973;TermFlowCwd=";
-const CWD_SYNC_OSC_SUFFIX = "\u0007";
-const CWD_SYNC_COMMAND = `printf '\\033]6973;TermFlowCwd=%s\\007' "$PWD"\r`;
-const CWD_SYNC_ECHO = `printf '\\033]6973;TermFlowCwd=%s\\007' "$PWD"`;
-
-function extractSyncedWorkingDirectory(output: string): string | null {
-  const start = output.lastIndexOf(CWD_SYNC_OSC_PREFIX);
-  if (start < 0) {
-    return null;
-  }
-  const valueStart = start + CWD_SYNC_OSC_PREFIX.length;
-  const end = output.indexOf(CWD_SYNC_OSC_SUFFIX, valueStart);
-  if (end < 0) {
-    return null;
-  }
-  const path = output.slice(valueStart, end).trim();
-  if (!path.startsWith("/")) {
-    return null;
-  }
-  return normalizeRemotePath(path);
-}
-
-function cleanCwdSyncOutput(output: string): string {
-  let cleaned = output.split(CWD_SYNC_ECHO).join("");
-  for (;;) {
-    const start = cleaned.indexOf(CWD_SYNC_OSC_PREFIX);
-    if (start < 0) {
-      break;
-    }
-    const end = cleaned.indexOf(CWD_SYNC_OSC_SUFFIX, start + CWD_SYNC_OSC_PREFIX.length);
-    if (end < 0) {
-      cleaned = cleaned.slice(0, start);
-      break;
-    }
-    cleaned = `${cleaned.slice(0, start)}${cleaned.slice(end + CWD_SYNC_OSC_SUFFIX.length)}`;
-  }
-  return cleaned.replace(/^\r?\n/, "");
-}
-
 function demoDir(basePath: string, name: string): BackendFileEntry {
   return { name, path: joinPath(basePath, name), size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true };
 }
@@ -808,8 +791,6 @@ const TERMINAL_ALERTS = [
 
 type TerminalDock = "monitor" | "files" | "history" | null;
 type CommandHistoryScope = "host" | "all";
-type CommandScopeKey = "global" | `connection:${string}`;
-type CommandScopeType = "global" | "connection";
 type CommandEditorRequest = {
   command: SavedCommand | null;
   scopeKey: CommandScopeKey;
@@ -819,8 +800,6 @@ type PendingCwdSync = {
   output: string;
   timeoutId: number;
 };
-const CONNECTION_TAG_PREFIX = "connection:";
-
 const MONITOR_CPU_HISTORY = [72, 75, 76, 77, 78, 79, 80, 80, 79, 78, 76, 74, 78, 81, 82, 83, 84, 83, 82, 85, 86, 87, 86, 84, 82, 80, 78, 76];
 const MONITOR_NET_HISTORY = [24, 8, 25, 24, 16, 4, 7, 5, 11, 24, 9, 7, 22, 15, 26, 14, 28, 31, 27, 18, 17, 10, 21, 8, 5, 17, 31, 36];
 const MONITOR_PROCESSES = [
@@ -893,39 +872,6 @@ function metricColor(value: number) {
   if (value >= 85) return "var(--red)";
   if (value >= 60) return "var(--yellow)";
   return "var(--green)";
-}
-
-function commandConnectionId(command: SavedCommand): string | null {
-  const connectionTag = command.tags.find((tag) => tag.startsWith(CONNECTION_TAG_PREFIX));
-  return connectionTag ? connectionTag.slice(CONNECTION_TAG_PREFIX.length) : null;
-}
-
-function commandScopeKey(command: SavedCommand): CommandScopeKey {
-  const connectionId = commandConnectionId(command);
-  return connectionId ? `connection:${connectionId}` : "global";
-}
-
-function scopeKeyForConnection(connectionId: string): CommandScopeKey {
-  return `connection:${connectionId}`;
-}
-
-function connectionIdFromScopeKey(scopeKey: CommandScopeKey): string | null {
-  return scopeKey.startsWith(CONNECTION_TAG_PREFIX) ? scopeKey.slice(CONNECTION_TAG_PREFIX.length) : null;
-}
-
-function commandMatchesTerminalScope(command: SavedCommand, connectionId: string | null): boolean {
-  const commandConnection = commandConnectionId(command);
-  if (commandConnection) {
-    return commandConnection === connectionId;
-  }
-  return command.tags.includes("global");
-}
-
-function commandScopeTags(existingTags: string[], scopeType: CommandScopeType, connectionId: string, danger: boolean): string[] {
-  const retained = existingTags.filter((tag) => tag !== "global" && tag !== "danger" && !tag.startsWith(CONNECTION_TAG_PREFIX));
-  const scopeTags = scopeType === "connection" ? [`${CONNECTION_TAG_PREFIX}${connectionId}`] : ["global"];
-  const dangerTags = danger ? ["danger"] : [];
-  return [...retained, ...scopeTags, ...dangerTags];
 }
 
 function TerminalMonitorDock({
@@ -1455,13 +1401,16 @@ function TerminalSmartBar({
   connectionId,
   onClose,
   onPick,
+  onReorder,
 }: {
   savedCommands: SavedCommand[];
   connectionId: string | null;
   onClose(): void;
   onPick(command: string): void;
+  onReorder(sourceId: string, targetId: string): void;
 }) {
-  const pinnedCommands = savedCommands.filter((command) => commandMatchesTerminalScope(command, connectionId)).slice(0, 8);
+  const pinnedCommands = getTerminalSmartBarCommands(savedCommands, connectionId);
+  const [draggingCommandId, setDraggingCommandId] = useState<string | null>(null);
 
   return (
     <div className="term-smartbar">
@@ -1479,9 +1428,30 @@ function TerminalSmartBar({
         ) : (
           pinnedCommands.map((command) => (
             <button
-              className="tq-chip"
+              className={`tq-chip${draggingCommandId === command.id ? " dragging" : ""}`}
               type="button"
               key={command.id}
+              draggable
+              onDragStart={(event) => {
+                setDraggingCommandId(command.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", command.id);
+              }}
+              onDragOver={(event) => {
+                if (draggingCommandId && draggingCommandId !== command.id) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const sourceId = event.dataTransfer.getData("text/plain") || draggingCommandId;
+                setDraggingCommandId(null);
+                if (sourceId) {
+                  onReorder(sourceId, command.id);
+                }
+              }}
+              onDragEnd={() => setDraggingCommandId(null)}
               onClick={() => onPick(command.command)}
               title={`${command.name} - ${command.command}`}
               aria-label={`Run command ${command.name}: ${command.command}`}
@@ -2155,9 +2125,105 @@ function FileEditorWindow({
     startWidth: number;
     startHeight: number;
   } | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [replaceText, setReplaceText] = useState("");
+  const [matchCase, setMatchCase] = useState(false);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const dirty = editor.content !== editor.originalContent;
   const lineCount = Math.max(1, editor.content.split("\n").length);
   const lineNumbers = Array.from({ length: lineCount }, (_, index) => index + 1).join("\n");
+  const searchMatches = useMemo(
+    () => findEditorSearchMatches(editor.content, searchQuery, matchCase),
+    [editor.content, matchCase, searchQuery],
+  );
+  const activeMatch = searchMatches[activeMatchIndex] ?? null;
+
+  useEffect(() => {
+    setActiveMatchIndex((current) => {
+      if (searchMatches.length === 0) {
+        return 0;
+      }
+      return Math.min(current, searchMatches.length - 1);
+    });
+  }, [searchMatches.length]);
+
+  const selectEditorRange = (start: number, end: number) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start, end);
+    });
+  };
+
+  const selectSearchMatch = (index: number) => {
+    const match = searchMatches[index];
+    if (!match) {
+      searchInputRef.current?.focus();
+      return;
+    }
+    setActiveMatchIndex(index);
+    selectEditorRange(match.start, match.end);
+  };
+
+  const goToSearchMatch = (direction: 1 | -1) => {
+    if (!searchQuery || searchMatches.length === 0) {
+      searchInputRef.current?.focus();
+      return;
+    }
+    const nextIndex = (activeMatchIndex + direction + searchMatches.length) % searchMatches.length;
+    selectSearchMatch(nextIndex);
+  };
+
+  const replaceCurrentMatch = () => {
+    const match = activeMatch ?? searchMatches[0] ?? null;
+    if (!match) {
+      searchInputRef.current?.focus();
+      return;
+    }
+    const nextContent = replaceEditorSearchMatch(editor.content, match, replaceText);
+    const replacementEnd = match.start + replaceText.length;
+    onChange(nextContent);
+    setActiveMatchIndex((current) => Math.min(current, Math.max(0, searchMatches.length - 2)));
+    selectEditorRange(match.start, replacementEnd);
+  };
+
+  const replaceAllMatches = () => {
+    const result = replaceAllEditorSearchMatches(editor.content, searchQuery, replaceText, matchCase);
+    if (result.count === 0) {
+      searchInputRef.current?.focus();
+      return;
+    }
+    onChange(result.content);
+    setActiveMatchIndex(0);
+    selectEditorRange(0, 0);
+  };
+
+  const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    goToSearchMatch(event.shiftKey ? -1 : 1);
+  };
+
+  const handleWindowKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      onFocus();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+      return;
+    }
+    if (event.key === "F3") {
+      event.preventDefault();
+      goToSearchMatch(event.shiftKey ? -1 : 1);
+    }
+  };
 
   const handleDragStart = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) {
@@ -2254,6 +2320,7 @@ function FileEditorWindow({
       role="dialog"
       aria-label={`Edit ${editor.name}`}
       onMouseDown={onFocus}
+      onKeyDown={handleWindowKeyDown}
       style={{
         zIndex: editor.zIndex,
         left: editor.x,
@@ -2303,16 +2370,83 @@ function FileEditorWindow({
           <span>This file looks binary and is opened read-only.</span>
         </div>
       ) : (
-        <div className={`fe-editor language-${editor.language}`}>
-          <pre className="fe-lines" aria-hidden="true">{lineNumbers}</pre>
-          <textarea
-            className="fe-textarea"
-            name={`file-editor-content-${editor.id}`}
-            spellCheck={false}
-            value={editor.content}
-            onChange={(event) => onChange(event.target.value)}
-          />
-        </div>
+        <>
+          <div className="fe-findbar" aria-label="Find and replace">
+            <label className="fe-find-field">
+              <Icon name="search" size={13} />
+              <input
+                aria-label="Find in file"
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => {
+                  setSearchQuery(event.target.value);
+                  setActiveMatchIndex(0);
+                }}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="Find"
+                spellCheck={false}
+              />
+            </label>
+            <span className="fe-find-count" aria-live="polite">
+              {searchQuery ? `${searchMatches.length ? activeMatchIndex + 1 : 0}/${searchMatches.length}` : "0/0"}
+            </span>
+            <button
+              className="fp-btn"
+              type="button"
+              disabled={searchMatches.length === 0}
+              title="Previous match"
+              aria-label="Previous match"
+              onClick={() => goToSearchMatch(-1)}
+            >
+              ↑
+            </button>
+            <button
+              className="fp-btn"
+              type="button"
+              disabled={searchMatches.length === 0}
+              title="Next match"
+              aria-label="Next match"
+              onClick={() => goToSearchMatch(1)}
+            >
+              ↓
+            </button>
+            <button
+              className={`fp-btn fe-case${matchCase ? " active" : ""}`}
+              type="button"
+              title="Match case"
+              aria-label="Match case"
+              aria-pressed={matchCase}
+              onClick={() => setMatchCase((current) => !current)}
+            >
+              Aa
+            </button>
+            <input
+              aria-label="Replace with"
+              className="fe-replace-input"
+              value={replaceText}
+              onChange={(event) => setReplaceText(event.target.value)}
+              placeholder="Replace"
+              spellCheck={false}
+            />
+            <button className="view-btn" type="button" disabled={searchMatches.length === 0} onClick={replaceCurrentMatch}>
+              Replace
+            </button>
+            <button className="view-btn" type="button" disabled={searchMatches.length === 0} onClick={replaceAllMatches}>
+              Replace all
+            </button>
+          </div>
+          <div className={`fe-editor language-${editor.language}`}>
+            <pre className="fe-lines" aria-hidden="true">{lineNumbers}</pre>
+            <textarea
+              className="fe-textarea"
+              name={`file-editor-content-${editor.id}`}
+              ref={textareaRef}
+              spellCheck={false}
+              value={editor.content}
+              onChange={(event) => onChange(event.target.value)}
+            />
+          </div>
+        </>
       )}
       <footer className="file-editor-foot">
         <button
@@ -3286,12 +3420,13 @@ export default function App() {
   const [fileEditors, setFileEditors] = useState<FileEditorState[]>([]);
   const [monitorSnapshot, setMonitorSnapshot] = useState<MonitorSnapshot | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
-  const [localPath, setLocalPath] = useState("/Users/delong/Work/go-termflow");
+  const [localPath, setLocalPath] = useState(DEFAULT_LOCAL_PATH);
   const [remotePathBySession, setRemotePathBySession] = useState<Record<string, string>>({});
   const liveSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingCwdSyncRef = useRef<PendingCwdSync | null>(null);
   const editorZIndexRef = useRef(260);
   const refreshRemoteFilesRef = useRef<(path?: string) => Promise<void>>(async () => {});
+  const terminalCommandInputRef = useRef<HTMLInputElement | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("terminal");
   const [theme, setTheme] = useState<"dark" | "light">("light");
@@ -3478,8 +3613,15 @@ export default function App() {
 
     async function loadConnections() {
       try {
-        const [loaded, commands, settings, loadedLocalFiles] = await Promise.all([
-          listConnections(),
+        const loaded = await listConnections();
+        if (cancelled) {
+          return;
+        }
+        setConnections(sortConnections(loaded));
+        setBackendAvailable(true);
+        setStatus(loaded.length > 0 ? `Loaded ${loaded.length} saved connections` : "Ready");
+
+        const [commandsResult, settingsResult, localFilesResult] = await Promise.allSettled([
           listSavedCommands(),
           getSettings(),
           listFiles({ side: "local", path: localPath }),
@@ -3487,13 +3629,18 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setConnections(sortConnections(loaded));
-        setSavedCommands(commands);
-        setAppSettings(settings);
-        setTheme(settings.theme === "dark" ? "dark" : "light");
-        setLocalFiles(loadedLocalFiles);
-        setBackendAvailable(true);
-        setStatus(loaded.length > 0 ? `Loaded ${loaded.length} saved connections` : "Ready");
+        if (commandsResult.status === "fulfilled") {
+          setSavedCommands(commandsResult.value);
+        }
+        if (settingsResult.status === "fulfilled") {
+          setAppSettings(settingsResult.value);
+          setTheme(settingsResult.value.theme === "dark" ? "dark" : "light");
+        }
+        if (localFilesResult.status === "fulfilled") {
+          setLocalFiles(localFilesResult.value);
+        } else {
+          setLocalFiles([]);
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -3543,13 +3690,13 @@ export default function App() {
       const pendingSync = pendingCwdSyncRef.current;
       if (pendingSync?.sessionId === event.sessionId) {
         const output = `${pendingSync.output}${event.data}`.slice(-4096);
-        const syncedPath = extractSyncedWorkingDirectory(output);
-        if (syncedPath) {
+        const synced = resolveCwdSyncOutput(output);
+        if (synced) {
           window.clearTimeout(pendingSync.timeoutId);
           pendingCwdSyncRef.current = null;
-          terminalOutput = cleanCwdSyncOutput(output);
-          void refreshRemoteFilesRef.current(syncedPath).then(() => {
-            setStatus(`Synced files to ${syncedPath}`);
+          terminalOutput = synced.terminalOutput;
+          void refreshRemoteFilesRef.current(synced.syncedPath).then(() => {
+            setStatus(`Synced files to ${synced.syncedPath}`);
           });
         } else {
           pendingCwdSyncRef.current = { ...pendingSync, output };
@@ -4613,13 +4760,18 @@ export default function App() {
       setStatus("Saved commands require the Wails backend");
       return;
     }
-    const saved = await saveSavedCommand(input);
+    const existingSortOrder = input.id ? savedCommands.find((command) => command.id === input.id)?.sortOrder : undefined;
+    const nextSortOrder = savedCommands.length === 0 ? 0 : Math.max(...savedCommands.map((command) => command.sortOrder ?? 0)) + 1;
+    const saved = await saveSavedCommand({
+      ...input,
+      sortOrder: input.sortOrder ?? existingSortOrder ?? nextSortOrder,
+    });
     setSavedCommands((current) => {
       const existingIndex = current.findIndex((item) => item.id === saved.id);
       const next = existingIndex >= 0
         ? current.map((item) => (item.id === saved.id ? saved : item))
         : [...current, saved];
-      return next.sort((left, right) => left.name.localeCompare(right.name));
+      return sortSavedCommands(next);
     });
     setCommandEditor(null);
     setStatus(`${input.id ? "Updated" : "Saved"} command: ${saved.name}`);
@@ -4656,6 +4808,7 @@ export default function App() {
       command: command.command,
       description: command.description,
       tags: nextTags,
+      sortOrder: command.sortOrder ?? 0,
     };
     if (!backendAvailable) {
       setSavedCommands((current) => current.map((item) => (item.id === command.id ? { ...item, tags: nextTags } : item)));
@@ -4668,6 +4821,62 @@ export default function App() {
     } catch (error) {
       setStatus(messageFromError(error));
     }
+  }
+
+  async function handleReorderTerminalSmartBarCommand(sourceId: string, targetId: string) {
+    const nextCommands = reorderTerminalSmartBarCommands(savedCommands, activeConnection?.id ?? null, sourceId, targetId);
+    const changedCommands = nextCommands.filter((command) => {
+      const previous = savedCommands.find((item) => item.id === command.id);
+      return previous && previous.sortOrder !== command.sortOrder;
+    });
+    if (changedCommands.length === 0) {
+      return;
+    }
+
+    setSavedCommands(nextCommands);
+    if (!backendAvailable) {
+      setStatus("Reordered quick commands");
+      return;
+    }
+
+    try {
+      const saved = await Promise.all(
+        changedCommands.map((command) =>
+          saveSavedCommand({
+            id: command.id,
+            name: command.name,
+            command: command.command,
+            description: command.description,
+            tags: command.tags,
+            sortOrder: command.sortOrder,
+          }),
+        ),
+      );
+      setSavedCommands((current) =>
+        sortSavedCommands(current.map((command) => saved.find((item) => item.id === command.id) ?? command)),
+      );
+      setStatus("Reordered quick commands");
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  function pickTerminalSmartCommand(command: string) {
+    setTerminalCommand(command);
+    setTerminalSmartOpen(false);
+    const focusInput = () => {
+      const input = terminalCommandInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.focus();
+      input.setSelectionRange(command.length, command.length);
+    };
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.setTimeout(focusInput, 0);
+      });
+    });
   }
 
   const paletteItems = [
@@ -5016,10 +5225,8 @@ export default function App() {
                   savedCommands={savedCommands}
                   connectionId={activeConnection?.id ?? null}
                   onClose={() => setTerminalSmartOpen(false)}
-                  onPick={(command) => {
-                    setTerminalCommand(command);
-                    setTerminalSmartOpen(false);
-                  }}
+                  onPick={pickTerminalSmartCommand}
+                  onReorder={(sourceId, targetId) => void handleReorderTerminalSmartBarCommand(sourceId, targetId)}
                 />
               ) : null}
               {terminalBroadcast && !activeTerminalFullscreen ? (
@@ -5040,6 +5247,7 @@ export default function App() {
                     <span className="t-prompt"> # </span>
                   </span>
                   <input
+                    ref={terminalCommandInputRef}
                     className="term-input"
                     name="terminal-command"
                     aria-label="Command input"

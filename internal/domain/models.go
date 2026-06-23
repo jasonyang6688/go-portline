@@ -140,6 +140,7 @@ type SaveSavedCommandInput struct {
 	Command     string   `json:"command"`
 	Description string   `json:"description"`
 	Tags        []string `json:"tags"`
+	SortOrder   int      `json:"sortOrder"`
 }
 
 type SavedCommand struct {
@@ -148,6 +149,7 @@ type SavedCommand struct {
 	Command     string    `json:"command"`
 	Description string    `json:"description"`
 	Tags        []string  `json:"tags"`
+	SortOrder   int       `json:"sortOrder"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }

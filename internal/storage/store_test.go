@@ -247,6 +247,7 @@ func TestSavedCommandCRUD(t *testing.T) {
 		Command:     "df -h",
 		Description: "Show disk usage",
 		Tags:        []string{"global", "server"},
+		SortOrder:   10,
 	})
 	if err != nil {
 		t.Fatalf("SaveSavedCommand(create) error = %v", err)
@@ -257,6 +258,9 @@ func TestSavedCommandCRUD(t *testing.T) {
 	if !reflect.DeepEqual(saved.Tags, []string{"global", "server"}) {
 		t.Fatalf("saved tags = %#v, want global/server", saved.Tags)
 	}
+	if saved.SortOrder != 10 {
+		t.Fatalf("saved sort order = %d, want 10", saved.SortOrder)
+	}
 
 	updated, err := store.SaveSavedCommand(domain.SaveSavedCommandInput{
 		ID:          saved.ID,
@@ -264,11 +268,12 @@ func TestSavedCommandCRUD(t *testing.T) {
 		Command:     "df -hT",
 		Description: "Show disk usage with filesystem type",
 		Tags:        []string{"global"},
+		SortOrder:   2,
 	})
 	if err != nil {
 		t.Fatalf("SaveSavedCommand(update) error = %v", err)
 	}
-	if updated.ID != saved.ID || updated.Name != "Check filesystem" || updated.Command != "df -hT" {
+	if updated.ID != saved.ID || updated.Name != "Check filesystem" || updated.Command != "df -hT" || updated.SortOrder != 2 {
 		t.Fatalf("updated command = %#v, want same ID and changed fields", updated)
 	}
 
@@ -289,6 +294,48 @@ func TestSavedCommandCRUD(t *testing.T) {
 	}
 	if len(commands) != 0 {
 		t.Fatalf("commands length after delete = %d, want 0", len(commands))
+	}
+}
+
+func TestSavedCommandsListBySortOrder(t *testing.T) {
+	store := newTestStore(t)
+
+	third, err := store.SaveSavedCommand(domain.SaveSavedCommandInput{
+		Name:      "Third",
+		Command:   "echo third",
+		Tags:      []string{"global"},
+		SortOrder: 30,
+	})
+	if err != nil {
+		t.Fatalf("SaveSavedCommand(third) error = %v", err)
+	}
+	first, err := store.SaveSavedCommand(domain.SaveSavedCommandInput{
+		Name:      "First",
+		Command:   "echo first",
+		Tags:      []string{"global"},
+		SortOrder: 10,
+	})
+	if err != nil {
+		t.Fatalf("SaveSavedCommand(first) error = %v", err)
+	}
+	second, err := store.SaveSavedCommand(domain.SaveSavedCommandInput{
+		Name:      "Second",
+		Command:   "echo second",
+		Tags:      []string{"global"},
+		SortOrder: 20,
+	})
+	if err != nil {
+		t.Fatalf("SaveSavedCommand(second) error = %v", err)
+	}
+
+	commands, err := store.ListSavedCommands()
+	if err != nil {
+		t.Fatalf("ListSavedCommands() error = %v", err)
+	}
+	got := []string{commands[0].ID, commands[1].ID, commands[2].ID}
+	want := []string{first.ID, second.ID, third.ID}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("command order = %#v, want %#v", got, want)
 	}
 }
 

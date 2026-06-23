@@ -111,6 +111,7 @@ export interface SavedCommand {
   command: string;
   description: string;
   tags: string[];
+  sortOrder: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -121,6 +122,7 @@ export interface SaveSavedCommandInput {
   command: string;
   description: string;
   tags: string[];
+  sortOrder?: number;
 }
 
 export interface AppSettings {

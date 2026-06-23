@@ -515,6 +515,7 @@ export namespace domain {
 	    command: string;
 	    description: string;
 	    tags: string[];
+	    sortOrder: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveSavedCommandInput(source);
@@ -527,6 +528,7 @@ export namespace domain {
 	        this.command = source["command"];
 	        this.description = source["description"];
 	        this.tags = source["tags"];
+	        this.sortOrder = source["sortOrder"];
 	    }
 	}
 	export class SavedCommand {
@@ -535,6 +537,7 @@ export namespace domain {
 	    command: string;
 	    description: string;
 	    tags: string[];
+	    sortOrder: number;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -551,6 +554,7 @@ export namespace domain {
 	        this.command = source["command"];
 	        this.description = source["description"];
 	        this.tags = source["tags"];
+	        this.sortOrder = source["sortOrder"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }

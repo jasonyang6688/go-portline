@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS saved_commands (
 	command TEXT NOT NULL,
 	description TEXT NOT NULL DEFAULT '',
 	tags_json TEXT NOT NULL DEFAULT '[]',
+	sort_order INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -82,6 +83,10 @@ func New(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSavedCommandSortOrderColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -93,15 +98,19 @@ func (s *Store) Close() error {
 }
 
 func ensureConnectionPasswordColumn(db *sql.DB) error {
-	return ensureColumn(db, "password", `ALTER TABLE connections ADD COLUMN password TEXT NOT NULL DEFAULT ''`)
+	return ensureColumn(db, "connections", "password", `ALTER TABLE connections ADD COLUMN password TEXT NOT NULL DEFAULT ''`)
 }
 
 func ensureConnectionInsecureHostKeyColumn(db *sql.DB) error {
-	return ensureColumn(db, "insecure_ignore_host_key", `ALTER TABLE connections ADD COLUMN insecure_ignore_host_key INTEGER NOT NULL DEFAULT 0`)
+	return ensureColumn(db, "connections", "insecure_ignore_host_key", `ALTER TABLE connections ADD COLUMN insecure_ignore_host_key INTEGER NOT NULL DEFAULT 0`)
 }
 
-func ensureColumn(db *sql.DB, columnName string, alterSQL string) error {
-	rows, err := db.Query(`PRAGMA table_info(connections)`)
+func ensureSavedCommandSortOrderColumn(db *sql.DB) error {
+	return ensureColumn(db, "saved_commands", "sort_order", `ALTER TABLE saved_commands ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`)
+}
+
+func ensureColumn(db *sql.DB, tableName string, columnName string, alterSQL string) error {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
 	if err != nil {
 		return err
 	}
@@ -302,7 +311,7 @@ func (s *Store) ClearCommandHistory(connectionID string) error {
 }
 
 func (s *Store) ListSavedCommands() ([]domain.SavedCommand, error) {
-	rows, err := s.db.Query(`SELECT id,name,command,description,tags_json,created_at,updated_at FROM saved_commands ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id,name,command,description,tags_json,sort_order,created_at,updated_at FROM saved_commands ORDER BY sort_order ASC, name ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -348,23 +357,25 @@ func (s *Store) SaveSavedCommand(input domain.SaveSavedCommandInput) (domain.Sav
 
 	if isCreate {
 		_, err = s.db.Exec(
-			`INSERT INTO saved_commands (id,name,command,description,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`,
+			`INSERT INTO saved_commands (id,name,command,description,tags_json,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`,
 			id,
 			strings.TrimSpace(input.Name),
 			strings.TrimSpace(input.Command),
 			strings.TrimSpace(input.Description),
 			string(tags),
+			input.SortOrder,
 			now.Format(time.RFC3339Nano),
 			now.Format(time.RFC3339Nano),
 		)
 	} else {
 		var res sql.Result
 		res, err = s.db.Exec(
-			`UPDATE saved_commands SET name=?,command=?,description=?,tags_json=?,updated_at=? WHERE id=?`,
+			`UPDATE saved_commands SET name=?,command=?,description=?,tags_json=?,sort_order=?,updated_at=? WHERE id=?`,
 			strings.TrimSpace(input.Name),
 			strings.TrimSpace(input.Command),
 			strings.TrimSpace(input.Description),
 			string(tags),
+			input.SortOrder,
 			now.Format(time.RFC3339Nano),
 			id,
 		)
@@ -433,7 +444,7 @@ func (s *Store) SaveSettings(input domain.AppSettings) (domain.AppSettings, erro
 }
 
 func (s *Store) getSavedCommand(id string) (domain.SavedCommand, error) {
-	row := s.db.QueryRow(`SELECT id,name,command,description,tags_json,created_at,updated_at FROM saved_commands WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id,name,command,description,tags_json,sort_order,created_at,updated_at FROM saved_commands WHERE id=?`, id)
 	return scanSavedCommand(row)
 }
 
@@ -485,14 +496,16 @@ func scanCommandHistory(row scanner) (domain.CommandHistoryEntry, error) {
 func scanSavedCommand(row scanner) (domain.SavedCommand, error) {
 	var command domain.SavedCommand
 	var tagsJSON string
+	var sortOrder int
 	var created string
 	var updated string
-	if err := row.Scan(&command.ID, &command.Name, &command.Command, &command.Description, &tagsJSON, &created, &updated); err != nil {
+	if err := row.Scan(&command.ID, &command.Name, &command.Command, &command.Description, &tagsJSON, &sortOrder, &created, &updated); err != nil {
 		return domain.SavedCommand{}, err
 	}
 	if err := json.Unmarshal([]byte(tagsJSON), &command.Tags); err != nil {
 		return domain.SavedCommand{}, err
 	}
+	command.SortOrder = sortOrder
 	var err error
 	command.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
