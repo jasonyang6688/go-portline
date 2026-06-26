@@ -239,6 +239,49 @@ func TestCommandHistoryCRUD(t *testing.T) {
 	}
 }
 
+func TestMonitorHistoryCRUD(t *testing.T) {
+	store := newTestStore(t)
+
+	first, err := store.SaveMonitorHistory(domain.SaveMonitorHistoryInput{
+		SessionID:     "s1",
+		ConnectionID:  "c1",
+		CPUPercent:    42,
+		MemoryPercent: 61,
+		DiskPercent:   77,
+		LoadAverage:   "1.20 1.10 1.02",
+		AlertLevel:    "ok",
+	})
+	if err != nil {
+		t.Fatalf("SaveMonitorHistory(first) error = %v", err)
+	}
+	second, err := store.SaveMonitorHistory(domain.SaveMonitorHistoryInput{
+		SessionID:     "s1",
+		ConnectionID:  "c1",
+		CPUPercent:    91,
+		MemoryPercent: 88,
+		DiskPercent:   92,
+		LoadAverage:   "8.00 6.00 4.00",
+		AlertLevel:    "critical",
+	})
+	if err != nil {
+		t.Fatalf("SaveMonitorHistory(second) error = %v", err)
+	}
+	if first.ID == "" || second.ID == "" || first.ID == second.ID {
+		t.Fatalf("monitor history IDs = (%q, %q), want distinct non-empty IDs", first.ID, second.ID)
+	}
+
+	history, err := store.ListMonitorHistory(domain.MonitorHistoryFilter{ConnectionID: "c1", Limit: 1})
+	if err != nil {
+		t.Fatalf("ListMonitorHistory() error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("history length = %d, want 1", len(history))
+	}
+	if history[0].ID != second.ID || history[0].AlertLevel != "critical" || history[0].CPUPercent != 91 {
+		t.Fatalf("latest monitor history = %#v, want second critical sample", history[0])
+	}
+}
+
 func TestSavedCommandCRUD(t *testing.T) {
 	store := newTestStore(t)
 

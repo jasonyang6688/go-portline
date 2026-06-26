@@ -44,6 +44,24 @@ CREATE TABLE IF NOT EXISTS command_history (
 CREATE INDEX IF NOT EXISTS idx_command_history_connection_created
 ON command_history(connection_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS monitor_history (
+	id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	connection_id TEXT NOT NULL,
+	cpu_percent INTEGER NOT NULL,
+	memory_percent INTEGER NOT NULL,
+	disk_percent INTEGER NOT NULL,
+	load_average TEXT NOT NULL DEFAULT '',
+	alert_level TEXT NOT NULL DEFAULT 'ok',
+	created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitor_history_session_created
+ON monitor_history(session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_monitor_history_connection_created
+ON monitor_history(connection_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS saved_commands (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
@@ -310,6 +328,85 @@ func (s *Store) ClearCommandHistory(connectionID string) error {
 	return err
 }
 
+func (s *Store) SaveMonitorHistory(input domain.SaveMonitorHistoryInput) (domain.MonitorHistoryEntry, error) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" {
+		return domain.MonitorHistoryEntry{}, errors.New("session id is required")
+	}
+	connectionID := strings.TrimSpace(input.ConnectionID)
+	if connectionID == "" {
+		return domain.MonitorHistoryEntry{}, errors.New("connection id is required")
+	}
+	id, err := newID()
+	if err != nil {
+		return domain.MonitorHistoryEntry{}, err
+	}
+	alertLevel := strings.TrimSpace(input.AlertLevel)
+	if alertLevel == "" {
+		alertLevel = "ok"
+	}
+	now := time.Now().UTC()
+	entry := domain.MonitorHistoryEntry{
+		ID:            id,
+		SessionID:     sessionID,
+		ConnectionID:  connectionID,
+		CPUPercent:    clampPercent(input.CPUPercent),
+		MemoryPercent: clampPercent(input.MemoryPercent),
+		DiskPercent:   clampPercent(input.DiskPercent),
+		LoadAverage:   strings.TrimSpace(input.LoadAverage),
+		AlertLevel:    alertLevel,
+		CreatedAt:     now,
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO monitor_history (id,session_id,connection_id,cpu_percent,memory_percent,disk_percent,load_average,alert_level,created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		entry.ID, entry.SessionID, entry.ConnectionID, entry.CPUPercent, entry.MemoryPercent, entry.DiskPercent, entry.LoadAverage, entry.AlertLevel, entry.CreatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return domain.MonitorHistoryEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *Store) ListMonitorHistory(filter domain.MonitorHistoryFilter) ([]domain.MonitorHistoryEntry, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+
+	query := `SELECT id,session_id,connection_id,cpu_percent,memory_percent,disk_percent,load_average,alert_level,created_at FROM monitor_history`
+	var where []string
+	var args []any
+	if strings.TrimSpace(filter.ConnectionID) != "" {
+		where = append(where, "connection_id=?")
+		args = append(args, strings.TrimSpace(filter.ConnectionID))
+	}
+	if strings.TrimSpace(filter.SessionID) != "" {
+		where = append(where, "session_id=?")
+		args = append(args, strings.TrimSpace(filter.SessionID))
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.MonitorHistoryEntry
+	for rows.Next() {
+		entry, err := scanMonitorHistory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListSavedCommands() ([]domain.SavedCommand, error) {
 	rows, err := s.db.Query(`SELECT id,name,command,description,tags_json,sort_order,created_at,updated_at FROM saved_commands ORDER BY sort_order ASC, name ASC`)
 	if err != nil {
@@ -493,6 +590,20 @@ func scanCommandHistory(row scanner) (domain.CommandHistoryEntry, error) {
 	return entry, nil
 }
 
+func scanMonitorHistory(row scanner) (domain.MonitorHistoryEntry, error) {
+	var entry domain.MonitorHistoryEntry
+	var created string
+	if err := row.Scan(&entry.ID, &entry.SessionID, &entry.ConnectionID, &entry.CPUPercent, &entry.MemoryPercent, &entry.DiskPercent, &entry.LoadAverage, &entry.AlertLevel, &created); err != nil {
+		return domain.MonitorHistoryEntry{}, err
+	}
+	var err error
+	entry.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return domain.MonitorHistoryEntry{}, err
+	}
+	return entry, nil
+}
+
 func scanSavedCommand(row scanner) (domain.SavedCommand, error) {
 	var command domain.SavedCommand
 	var tagsJSON string
@@ -553,6 +664,16 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func clampPercent(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
 }
 
 func newID() (string, error) {

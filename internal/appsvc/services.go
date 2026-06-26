@@ -413,7 +413,49 @@ func (s *Service) GetMonitorSnapshot(sessionID string) (domain.MonitorSnapshot, 
 	}
 	snapshot := parseMonitorSnapshot(sessionID, string(out))
 	snapshot.UpdatedAt = time.Now().UTC()
+	if s.store != nil {
+		_ = s.recordMonitorHistory(snapshot)
+	}
 	return snapshot, nil
+}
+
+func (s *Service) ListMonitorHistory(filter domain.MonitorHistoryFilter) ([]domain.MonitorHistoryEntry, error) {
+	if s == nil || s.store == nil {
+		return nil, errStoreUnavailable
+	}
+	return s.store.ListMonitorHistory(filter)
+}
+
+func (s *Service) GetMonitorIncidentReport(sessionID string) (string, error) {
+	if s == nil || s.registry == nil {
+		return "", errRegistryUnavailable
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", errors.New("session id is required")
+	}
+	out, err := s.registry.Run(sessionID, monitorIncidentCommand())
+	if err != nil {
+		return "", err
+	}
+	return formatMonitorIncidentReport(sessionID, string(out), time.Now().UTC()), nil
+}
+
+func (s *Service) recordMonitorHistory(snapshot domain.MonitorSnapshot) error {
+	session, err := s.registry.Snapshot(snapshot.SessionID)
+	if err != nil {
+		return err
+	}
+	_, err = s.store.SaveMonitorHistory(domain.SaveMonitorHistoryInput{
+		SessionID:     snapshot.SessionID,
+		ConnectionID:  session.ConnectionID,
+		CPUPercent:    snapshot.CPUPercent,
+		MemoryPercent: snapshot.MemoryPercent,
+		DiskPercent:   snapshot.DiskPercent,
+		LoadAverage:   snapshot.LoadAverage,
+		AlertLevel:    monitorAlertLevel(snapshot),
+	})
+	return err
 }
 
 func (s *Service) connectRequest(input domain.TestConnectionInput) (sshclient.ConnectRequest, error) {
@@ -661,11 +703,106 @@ func parseRemoteFiles(basePath string, raw string) ([]domain.FileEntry, error) {
 
 func monitorCommand() string {
 	return `cpu=$(top -bn1 2>/dev/null | awk -F'id,' '/Cpu/ { split($1,a,","); v=a[length(a)]; gsub(/[^0-9.]/,"",v); printf "%.0f", 100-v }'); ` +
-		`mem=$(free 2>/dev/null | awk '/Mem:/ { printf "%.0f", ($3/$2)*100 }'); ` +
-		`disk=$(df -P / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); print $5 }'); ` +
+		`cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 0); ` +
 		`load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3"}'); ` +
-		`echo cpu=${cpu:-0}; echo mem=${mem:-0}; echo disk=${disk:-0}; echo load=${load:-unknown}; ` +
+		`echo cpu=${cpu:-0}; awk -v c="${cpu:-0}" 'BEGIN { v=100-c; if (v<0) v=0; if (v>100) v=100; printf "cpu_idle=%.0f\n", v }'; echo cpu_cores=${cores:-0}; ` +
+		`free -b 2>/dev/null | awk '/Mem:/ { printf "mem=%.0f\nmem_total_bytes=%s\nmem_used_bytes=%s\nmem_available_bytes=%s\n", ($3/$2)*100, $2, $3, $7 }'; ` +
+		`df -P -B1 / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); printf "disk=%s\ndisk_total_bytes=%s\ndisk_used_bytes=%s\ndisk_available_bytes=%s\n", $5, $2, $3, $4 }'; ` +
+		`df -PT -B1 2>/dev/null | awk 'NR>1 { gsub("%","",$6); printf "fs=%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1, $2, $7, $6, $3, $4, $5 }'; ` +
+		`cat /proc/net/dev 2>/dev/null | awk 'NR>2 { gsub(":","",$1); if ($1!="lo") printf "net=%s\t%s\t%s\n", $1, $2, $10 }'; ` +
+		`echo load=${load:-unknown}; ` +
 		`ps -eo comm,pid,pcpu,pmem,rss --sort=-pcpu 2>/dev/null | awk 'NR>1 && NR<8 { printf "proc=%s\t%s\t%s\t%.1fM\t%s\n", $1, $2, $3, $5/1024, $4 }'`
+}
+
+func monitorIncidentCommand() string {
+	return `tf_section(){ printf '\n__TF_SECTION__%s\n' "$1"; }; ` +
+		`tf_section "Host identity"; (hostnamectl 2>/dev/null || uname -a 2>/dev/null); uptime 2>/dev/null; ` +
+		`tf_section "Load and memory"; (uptime && cat /proc/loadavg && free -h) 2>/dev/null; ` +
+		`tf_section "Top CPU processes"; ps -eo pid,ppid,user,comm,pcpu,pmem,rss --sort=-pcpu 2>/dev/null | head -15; ` +
+		`tf_section "Filesystems"; (df -hT && df -ih) 2>/dev/null; ` +
+		`tf_section "Network sockets"; ss -tunap 2>/dev/null | head -40; ` +
+		`tf_section "Failed systemd units"; systemctl --failed --no-pager --plain 2>/dev/null | head -80; ` +
+		`tf_section "Docker containers"; docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | head -80; ` +
+		`tf_section "Recent errors"; journalctl -p err -n 80 --no-pager 2>/dev/null`
+}
+
+func monitorAlertLevel(snapshot domain.MonitorSnapshot) string {
+	critical := snapshot.CPUPercent >= 95 || snapshot.MemoryPercent >= 90 || snapshot.DiskPercent >= 90
+	warn := snapshot.CPUPercent >= 85 || snapshot.MemoryPercent >= 85 || snapshot.DiskPercent >= 80
+	for _, filesystem := range snapshot.Filesystems {
+		if filesystem.Percent >= 90 {
+			critical = true
+		} else if filesystem.Percent >= 80 {
+			warn = true
+		}
+	}
+	if critical {
+		return "critical"
+	}
+	if warn {
+		return "warn"
+	}
+	return "ok"
+}
+
+type monitorIncidentSection struct {
+	title string
+	body  []string
+}
+
+func formatMonitorIncidentReport(sessionID string, raw string, collectedAt time.Time) string {
+	sections := parseIncidentSections(raw)
+	if len(sections) == 0 && strings.TrimSpace(raw) != "" {
+		sections = []monitorIncidentSection{{title: "Raw diagnostics", body: []string{raw}}}
+	}
+
+	var b strings.Builder
+	b.WriteString("# TermFlow Incident Report\n\n")
+	b.WriteString("Session: `")
+	b.WriteString(sessionID)
+	b.WriteString("`\n\n")
+	b.WriteString("Collected: `")
+	b.WriteString(collectedAt.UTC().Format(time.RFC3339))
+	b.WriteString("`\n")
+
+	for _, section := range sections {
+		title := strings.TrimSpace(section.title)
+		if title == "" {
+			title = "Diagnostics"
+		}
+		body := strings.TrimSpace(strings.Join(section.body, "\n"))
+		if body == "" {
+			body = "(no output)"
+		}
+		body = strings.ReplaceAll(body, "```", "` ` `")
+		b.WriteString("\n## ")
+		b.WriteString(title)
+		b.WriteString("\n\n```text\n")
+		b.WriteString(body)
+		b.WriteString("\n```\n")
+	}
+	return b.String()
+}
+
+func parseIncidentSections(raw string) []monitorIncidentSection {
+	var sections []monitorIncidentSection
+	var current *monitorIncidentSection
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, "__TF_SECTION__") {
+			sections = append(sections, monitorIncidentSection{title: strings.TrimSpace(strings.TrimPrefix(line, "__TF_SECTION__"))})
+			current = &sections[len(sections)-1]
+			continue
+		}
+		if current == nil {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			sections = append(sections, monitorIncidentSection{title: "Diagnostics"})
+			current = &sections[len(sections)-1]
+		}
+		current.body = append(current.body, line)
+	}
+	return sections
 }
 
 func parseMonitorSnapshot(sessionID string, raw string) domain.MonitorSnapshot {
@@ -675,12 +812,56 @@ func parseMonitorSnapshot(sessionID string, raw string) domain.MonitorSnapshot {
 		switch {
 		case strings.HasPrefix(line, "cpu="):
 			snapshot.CPUPercent = parseIntPercent(strings.TrimPrefix(line, "cpu="))
+		case strings.HasPrefix(line, "cpu_idle="):
+			snapshot.CPUIdlePercent = parseIntPercent(strings.TrimPrefix(line, "cpu_idle="))
+		case strings.HasPrefix(line, "cpu_cores="):
+			snapshot.CPUCores = parseNonNegativeInt(strings.TrimPrefix(line, "cpu_cores="))
 		case strings.HasPrefix(line, "mem="):
 			snapshot.MemoryPercent = parseIntPercent(strings.TrimPrefix(line, "mem="))
+		case strings.HasPrefix(line, "mem_total_bytes="):
+			snapshot.MemoryTotalLabel = byteSizeLabel(strings.TrimPrefix(line, "mem_total_bytes="))
+		case strings.HasPrefix(line, "mem_used_bytes="):
+			snapshot.MemoryUsedLabel = byteSizeLabel(strings.TrimPrefix(line, "mem_used_bytes="))
+		case strings.HasPrefix(line, "mem_available_bytes="):
+			snapshot.MemoryAvailableLabel = byteSizeLabel(strings.TrimPrefix(line, "mem_available_bytes="))
 		case strings.HasPrefix(line, "disk="):
 			snapshot.DiskPercent = parseIntPercent(strings.TrimPrefix(line, "disk="))
+		case strings.HasPrefix(line, "disk_total_bytes="):
+			snapshot.DiskTotalLabel = byteSizeLabel(strings.TrimPrefix(line, "disk_total_bytes="))
+		case strings.HasPrefix(line, "disk_used_bytes="):
+			snapshot.DiskUsedLabel = byteSizeLabel(strings.TrimPrefix(line, "disk_used_bytes="))
+		case strings.HasPrefix(line, "disk_available_bytes="):
+			snapshot.DiskAvailableLabel = byteSizeLabel(strings.TrimPrefix(line, "disk_available_bytes="))
 		case strings.HasPrefix(line, "load="):
 			snapshot.LoadAverage = strings.TrimSpace(strings.TrimPrefix(line, "load="))
+		case strings.HasPrefix(line, "fs="):
+			parts := strings.Split(strings.TrimPrefix(line, "fs="), "\t")
+			if len(parts) < 7 {
+				continue
+			}
+			snapshot.Filesystems = append(snapshot.Filesystems, domain.FileSystemMetric{
+				Filesystem:     parts[0],
+				Type:           parts[1],
+				Mount:          parts[2],
+				Percent:        parseIntPercent(parts[3]),
+				TotalLabel:     byteSizeLabel(parts[4]),
+				UsedLabel:      byteSizeLabel(parts[5]),
+				AvailableLabel: byteSizeLabel(parts[6]),
+			})
+		case strings.HasPrefix(line, "net="):
+			parts := strings.Split(strings.TrimPrefix(line, "net="), "\t")
+			if len(parts) < 3 {
+				continue
+			}
+			rxBytes := parseNonNegativeInt64(parts[1])
+			txBytes := parseNonNegativeInt64(parts[2])
+			snapshot.NetworkInterfaces = append(snapshot.NetworkInterfaces, domain.NetworkInterfaceMetric{
+				Name:    parts[0],
+				RXBytes: rxBytes,
+				TXBytes: txBytes,
+				RXLabel: sizeLabel(rxBytes, false),
+				TXLabel: sizeLabel(txBytes, false),
+			})
 		case strings.HasPrefix(line, "proc="):
 			parts := strings.Split(strings.TrimPrefix(line, "proc="), "\t")
 			if len(parts) < 4 {
@@ -704,7 +885,35 @@ func parseMonitorSnapshot(sessionID string, raw string) domain.MonitorSnapshot {
 	if snapshot.LoadAverage == "" {
 		snapshot.LoadAverage = "unknown"
 	}
+	if snapshot.CPUIdlePercent == 0 && snapshot.CPUPercent < 100 {
+		snapshot.CPUIdlePercent = 100 - snapshot.CPUPercent
+	}
+	if len(snapshot.Filesystems) == 0 && snapshot.DiskTotalLabel != "" {
+		snapshot.Filesystems = append(snapshot.Filesystems, domain.FileSystemMetric{
+			Mount:          "/",
+			Percent:        snapshot.DiskPercent,
+			TotalLabel:     snapshot.DiskTotalLabel,
+			UsedLabel:      snapshot.DiskUsedLabel,
+			AvailableLabel: snapshot.DiskAvailableLabel,
+		})
+	}
 	return snapshot
+}
+
+func parseNonNegativeInt(value string) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
+}
+
+func parseNonNegativeInt64(value string) int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func parseIntPercent(value string) int {
@@ -719,6 +928,14 @@ func parseIntPercent(value string) int {
 		return 100
 	}
 	return int(parsed + 0.5)
+}
+
+func byteSizeLabel(value string) string {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed < 0 {
+		return ""
+	}
+	return sizeLabel(parsed, false)
 }
 
 func sizeLabel(size int64, isDir bool) string {

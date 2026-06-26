@@ -26,6 +26,10 @@ export function DeleteSavedCommand(arg1) {
   return window['go']['main']['App']['DeleteSavedCommand'](arg1);
 }
 
+export function GetMonitorIncidentReport(arg1) {
+  return window['go']['main']['App']['GetMonitorIncidentReport'](arg1);
+}
+
 export function GetMonitorSnapshot(arg1) {
   return window['go']['main']['App']['GetMonitorSnapshot'](arg1);
 }
@@ -44,6 +48,10 @@ export function ListConnections() {
 
 export function ListFiles(arg1) {
   return window['go']['main']['App']['ListFiles'](arg1);
+}
+
+export function ListMonitorHistory(arg1) {
+  return window['go']['main']['App']['ListMonitorHistory'](arg1);
 }
 
 export function ListSavedCommands() {

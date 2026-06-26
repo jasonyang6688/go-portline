@@ -12,6 +12,8 @@ import type {
   FileSaveInput,
   FileTransferInput,
   FileTransferResult,
+  MonitorHistoryEntry,
+  MonitorHistoryFilter,
   MonitorSnapshot,
   OpenSessionInput,
   RunCommandInput,
@@ -62,6 +64,8 @@ type WailsAppApi = {
   SelectLocalDirectory(title: string): Promise<string>;
   SelectSaveFile(defaultFilename: string): Promise<string>;
   GetMonitorSnapshot(sessionId: string): Promise<MonitorSnapshot>;
+  ListMonitorHistory(filter: MonitorHistoryFilter): Promise<MonitorHistoryEntry[]>;
+  GetMonitorIncidentReport(sessionId: string): Promise<string>;
 };
 
 declare global {
@@ -197,6 +201,14 @@ export function selectSaveFile(defaultFilename: string): Promise<string> {
 
 export function getMonitorSnapshot(sessionId: string): Promise<MonitorSnapshot> {
   return appApi().GetMonitorSnapshot(sessionId);
+}
+
+export function listMonitorHistory(filter: MonitorHistoryFilter): Promise<MonitorHistoryEntry[]> {
+  return appApi().ListMonitorHistory(filter);
+}
+
+export function getMonitorIncidentReport(sessionId: string): Promise<string> {
+  return appApi().GetMonitorIncidentReport(sessionId);
 }
 
 export function onWailsEvent<T>(name: string, callback: (data: T) => void): () => void {

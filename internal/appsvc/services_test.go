@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -633,7 +634,7 @@ func TestMonitorSnapshotUsesSessionCommandOutput(t *testing.T) {
 	store := newTestStore(t)
 	conn := saveTestConnection(t, store)
 	term := &fakeTerminalSession{
-		runOut: []byte("cpu=18\nmem=62\ndisk=41\nload=0.62 0.58 0.49\nproc=nginx\t1235\t4.1\t5.8M\n"),
+		runOut: []byte("cpu=18\ncpu_idle=82\ncpu_cores=4\nmem=62\nmem_total_bytes=8589934592\nmem_used_bytes=5325759447\nmem_available_bytes=3264175145\ndisk=41\ndisk_total_bytes=107374182400\ndisk_used_bytes=44023414784\ndisk_available_bytes=63350767616\nload=0.62 0.58 0.49\nfs=/dev/sda1\text4\t/\t41\t107374182400\t44023414784\t63350767616\nfs=/dev/sdb1\txfs\t/var/log\t92\t53687091200\t49392123904\t4294967296\nnet=eth0\t12582912\t4194304\nproc=nginx\t1235\t4.1\t5.8M\n"),
 	}
 	runner := &fakeRunner{session: term}
 	registry := sessions.NewRegistry(runner, nil)
@@ -650,8 +651,66 @@ func TestMonitorSnapshotUsesSessionCommandOutput(t *testing.T) {
 	if snapshot.CPUPercent != 18 || snapshot.MemoryPercent != 62 || snapshot.DiskPercent != 41 || snapshot.LoadAverage != "0.62 0.58 0.49" {
 		t.Fatalf("snapshot = %#v, want parsed metrics", snapshot)
 	}
+	if snapshot.CPUIdlePercent != 82 || snapshot.CPUCores != 4 {
+		t.Fatalf("snapshot CPU details = idle %d cores %d, want idle 82 cores 4", snapshot.CPUIdlePercent, snapshot.CPUCores)
+	}
+	if snapshot.MemoryTotalLabel != "8.0 GB" || snapshot.MemoryUsedLabel != "5.0 GB" || snapshot.MemoryAvailableLabel != "3.0 GB" {
+		t.Fatalf("snapshot memory labels = %q/%q/%q, want 8.0 GB/5.0 GB/3.0 GB", snapshot.MemoryTotalLabel, snapshot.MemoryUsedLabel, snapshot.MemoryAvailableLabel)
+	}
+	if snapshot.DiskTotalLabel != "100.0 GB" || snapshot.DiskUsedLabel != "41.0 GB" || snapshot.DiskAvailableLabel != "59.0 GB" {
+		t.Fatalf("snapshot disk labels = %q/%q/%q, want 100.0 GB/41.0 GB/59.0 GB", snapshot.DiskTotalLabel, snapshot.DiskUsedLabel, snapshot.DiskAvailableLabel)
+	}
 	if len(snapshot.Processes) != 1 || snapshot.Processes[0].Name != "nginx" || snapshot.Processes[0].PID != 1235 {
 		t.Fatalf("snapshot processes = %#v, want nginx", snapshot.Processes)
+	}
+	if len(snapshot.Filesystems) != 2 || snapshot.Filesystems[1].Mount != "/var/log" || snapshot.Filesystems[1].Percent != 92 {
+		t.Fatalf("snapshot filesystems = %#v, want /var/log at 92%%", snapshot.Filesystems)
+	}
+	if len(snapshot.NetworkInterfaces) != 1 || snapshot.NetworkInterfaces[0].Name != "eth0" || snapshot.NetworkInterfaces[0].RXBytes != 12582912 || snapshot.NetworkInterfaces[0].TXBytes != 4194304 {
+		t.Fatalf("snapshot network interfaces = %#v, want eth0 byte counters", snapshot.NetworkInterfaces)
+	}
+
+	history, err := service.ListMonitorHistory(domain.MonitorHistoryFilter{ConnectionID: conn.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListMonitorHistory() error = %v", err)
+	}
+	if len(history) != 1 || history[0].SessionID != session.ID || history[0].CPUPercent != 18 || history[0].AlertLevel != "critical" {
+		t.Fatalf("monitor history = %#v, want one critical snapshot sample", history)
+	}
+}
+
+func TestMonitorIncidentReportUsesReadonlyDiagnostics(t *testing.T) {
+	store := newTestStore(t)
+	conn := saveTestConnection(t, store)
+	term := &fakeTerminalSession{
+		runOut: []byte("__TF_SECTION__Host identity\nLinux prod-01 6.1\n__TF_SECTION__Filesystems\n/dev/sdb1 xfs 50G 46G 4G 92% /var/log\n__TF_SECTION__Recent errors\nnginx[123]: upstream timed out\n"),
+	}
+	runner := &fakeRunner{session: term}
+	registry := sessions.NewRegistry(runner, nil)
+	service := NewService(store, registry, runner)
+	session, err := service.OpenSession(domain.OpenSessionInput{ConnectionID: conn.ID, Password: "secret", InsecureIgnoreHostKey: true})
+	if err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+
+	report, err := service.GetMonitorIncidentReport(session.ID)
+	if err != nil {
+		t.Fatalf("GetMonitorIncidentReport() error = %v", err)
+	}
+
+	if len(term.runs) != 1 {
+		t.Fatalf("terminal runs = %d, want 1", len(term.runs))
+	}
+	command := term.runs[0]
+	for _, want := range []string{"hostnamectl", "systemctl --failed", "journalctl -p err", "df -hT", "ss -tunap"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("incident command missing %q: %s", want, command)
+		}
+	}
+	for _, want := range []string{"# TermFlow Incident Report", "## Host identity", "Linux prod-01 6.1", "## Filesystems", "/var/log", "## Recent errors", "upstream timed out"} {
+		if !strings.Contains(report, want) {
+			t.Fatalf("report missing %q:\n%s", want, report)
+		}
 	}
 }
 

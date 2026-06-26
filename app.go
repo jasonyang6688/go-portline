@@ -70,12 +70,20 @@ func defaultDBPath() (string, error) {
 	return filepath.Join(dir, "TermFlow", "termflow.db"), nil
 }
 
-func (a *App) ListConnections() ([]domain.Connection, error) {
-	return a.service.ListConnections()
+func (a *App) ListConnections() ([]APIConnection, error) {
+	connections, err := a.service.ListConnections()
+	if err != nil {
+		return nil, err
+	}
+	return apiConnections(connections), nil
 }
 
-func (a *App) SaveConnection(input domain.SaveConnectionInput) (domain.Connection, error) {
-	return a.service.SaveConnection(input)
+func (a *App) SaveConnection(input domain.SaveConnectionInput) (APIConnection, error) {
+	connection, err := a.service.SaveConnection(input)
+	if err != nil {
+		return APIConnection{}, err
+	}
+	return apiConnection(connection), nil
 }
 
 func (a *App) DeleteConnection(id string) error {
@@ -86,8 +94,12 @@ func (a *App) TestConnection(input domain.TestConnectionInput) error {
 	return a.service.TestConnection(input)
 }
 
-func (a *App) OpenSession(input domain.OpenSessionInput) (domain.Session, error) {
-	return a.service.OpenSession(input)
+func (a *App) OpenSession(input domain.OpenSessionInput) (APISession, error) {
+	session, err := a.service.OpenSession(input)
+	if err != nil {
+		return APISession{}, err
+	}
+	return apiSession(session), nil
 }
 
 func (a *App) CloseSession(sessionID string) error {
@@ -110,20 +122,32 @@ func (a *App) RunCommand(input domain.RunCommandInput) error {
 	return a.service.RunCommand(input)
 }
 
-func (a *App) ListCommandHistory(filter domain.CommandHistoryFilter) ([]domain.CommandHistoryEntry, error) {
-	return a.service.ListCommandHistory(filter)
+func (a *App) ListCommandHistory(filter domain.CommandHistoryFilter) ([]APICommandHistoryEntry, error) {
+	history, err := a.service.ListCommandHistory(filter)
+	if err != nil {
+		return nil, err
+	}
+	return apiCommandHistory(history), nil
 }
 
 func (a *App) ClearCommandHistory(connectionID string) error {
 	return a.service.ClearCommandHistory(connectionID)
 }
 
-func (a *App) ListSavedCommands() ([]domain.SavedCommand, error) {
-	return a.service.ListSavedCommands()
+func (a *App) ListSavedCommands() ([]APISavedCommand, error) {
+	commands, err := a.service.ListSavedCommands()
+	if err != nil {
+		return nil, err
+	}
+	return apiSavedCommands(commands), nil
 }
 
-func (a *App) SaveSavedCommand(input domain.SaveSavedCommandInput) (domain.SavedCommand, error) {
-	return a.service.SaveSavedCommand(input)
+func (a *App) SaveSavedCommand(input domain.SaveSavedCommandInput) (APISavedCommand, error) {
+	command, err := a.service.SaveSavedCommand(input)
+	if err != nil {
+		return APISavedCommand{}, err
+	}
+	return apiSavedCommand(command), nil
 }
 
 func (a *App) DeleteSavedCommand(id string) error {
@@ -138,12 +162,20 @@ func (a *App) SaveSettings(input domain.AppSettings) (domain.AppSettings, error)
 	return a.service.SaveSettings(input)
 }
 
-func (a *App) ListFiles(input domain.FileListInput) ([]domain.FileEntry, error) {
-	return a.service.ListFiles(input)
+func (a *App) ListFiles(input domain.FileListInput) ([]APIFileEntry, error) {
+	files, err := a.service.ListFiles(input)
+	if err != nil {
+		return nil, err
+	}
+	return apiFileEntries(files), nil
 }
 
-func (a *App) ReadFile(input domain.FileReadInput) (domain.FileContent, error) {
-	return a.service.ReadFile(input)
+func (a *App) ReadFile(input domain.FileReadInput) (APIFileContent, error) {
+	file, err := a.service.ReadFile(input)
+	if err != nil {
+		return APIFileContent{}, err
+	}
+	return apiFileContent(file), nil
 }
 
 func (a *App) SaveFile(input domain.FileSaveInput) error {
@@ -212,6 +244,22 @@ func (a *App) SelectSaveFile(defaultFilename string) (string, error) {
 	})
 }
 
-func (a *App) GetMonitorSnapshot(sessionID string) (domain.MonitorSnapshot, error) {
-	return a.service.GetMonitorSnapshot(sessionID)
+func (a *App) GetMonitorSnapshot(sessionID string) (APIMonitorSnapshot, error) {
+	snapshot, err := a.service.GetMonitorSnapshot(sessionID)
+	if err != nil {
+		return APIMonitorSnapshot{}, err
+	}
+	return apiMonitorSnapshot(snapshot), nil
+}
+
+func (a *App) ListMonitorHistory(filter domain.MonitorHistoryFilter) ([]APIMonitorHistoryEntry, error) {
+	history, err := a.service.ListMonitorHistory(filter)
+	if err != nil {
+		return nil, err
+	}
+	return apiMonitorHistory(history), nil
+}
+
+func (a *App) GetMonitorIncidentReport(sessionID string) (string, error) {
+	return a.service.GetMonitorIncidentReport(sessionID)
 }

@@ -211,14 +211,60 @@ export interface ProcessMetric {
   memoryPercent: number;
 }
 
+export interface FileSystemMetric {
+  filesystem: string;
+  type: string;
+  mount: string;
+  percent: number;
+  totalLabel: string;
+  usedLabel: string;
+  availableLabel: string;
+}
+
+export interface NetworkInterfaceMetric {
+  name: string;
+  rxBytes: number;
+  txBytes: number;
+  rxLabel: string;
+  txLabel: string;
+}
+
 export interface MonitorSnapshot {
   sessionId: string;
+  cpuPercent: number;
+  cpuIdlePercent: number;
+  cpuCores: number;
+  memoryPercent: number;
+  memoryTotalLabel: string;
+  memoryUsedLabel: string;
+  memoryAvailableLabel: string;
+  diskPercent: number;
+  diskTotalLabel: string;
+  diskUsedLabel: string;
+  diskAvailableLabel: string;
+  loadAverage: string;
+  processes: ProcessMetric[];
+  filesystems: FileSystemMetric[];
+  networkInterfaces: NetworkInterfaceMetric[];
+  updatedAt: string;
+}
+
+export interface MonitorHistoryFilter {
+  connectionId?: string;
+  sessionId?: string;
+  limit?: number;
+}
+
+export interface MonitorHistoryEntry {
+  id: string;
+  sessionId: string;
+  connectionId: string;
   cpuPercent: number;
   memoryPercent: number;
   diskPercent: number;
   loadAverage: string;
-  processes: ProcessMetric[];
-  updatedAt: string;
+  alertLevel: "ok" | "warn" | "critical" | string;
+  createdAt: string;
 }
 
 export const SESSION_CREATED_EVENT = "session:created";

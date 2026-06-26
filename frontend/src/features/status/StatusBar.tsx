@@ -17,13 +17,13 @@ export function StatusBar({ status, sessions, activeSession, activeConnection }:
   return (
     <footer className="statusbar tf-statusbar">
       <span className="sb-seg sb-brand-seg">›_ Portline v0.1.4</span>
-      <span className="sb-seg">
+      <span className="sb-seg sb-session-seg">
         <span className="sb-status-dot" />
         {activeSession?.name ?? status}
       </span>
-      <span className="sb-seg">⌘ {user} @ {host} : {port}</span>
-      <span className="sb-seg right">{connectedCount} sessions</span>
-      <span className="sb-seg">Encrypted</span>
+      <span className="sb-seg sb-command-seg">⌘ {user} @ {host} : {port}</span>
+      <span className="sb-seg sb-meta-seg right">{connectedCount} sessions</span>
+      <span className="sb-seg sb-meta-seg">Encrypted</span>
     </footer>
   );
 }

@@ -134,6 +134,34 @@ type CommandHistoryEntry struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
+type MonitorHistoryFilter struct {
+	ConnectionID string `json:"connectionId"`
+	SessionID    string `json:"sessionId"`
+	Limit        int    `json:"limit"`
+}
+
+type SaveMonitorHistoryInput struct {
+	SessionID     string `json:"sessionId"`
+	ConnectionID  string `json:"connectionId"`
+	CPUPercent    int    `json:"cpuPercent"`
+	MemoryPercent int    `json:"memoryPercent"`
+	DiskPercent   int    `json:"diskPercent"`
+	LoadAverage   string `json:"loadAverage"`
+	AlertLevel    string `json:"alertLevel"`
+}
+
+type MonitorHistoryEntry struct {
+	ID            string    `json:"id"`
+	SessionID     string    `json:"sessionId"`
+	ConnectionID  string    `json:"connectionId"`
+	CPUPercent    int       `json:"cpuPercent"`
+	MemoryPercent int       `json:"memoryPercent"`
+	DiskPercent   int       `json:"diskPercent"`
+	LoadAverage   string    `json:"loadAverage"`
+	AlertLevel    string    `json:"alertLevel"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
 type SaveSavedCommandInput struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -254,12 +282,40 @@ type ProcessMetric struct {
 	MemoryPercent float64 `json:"memoryPercent"`
 }
 
+type FileSystemMetric struct {
+	Filesystem     string `json:"filesystem"`
+	Type           string `json:"type"`
+	Mount          string `json:"mount"`
+	Percent        int    `json:"percent"`
+	TotalLabel     string `json:"totalLabel"`
+	UsedLabel      string `json:"usedLabel"`
+	AvailableLabel string `json:"availableLabel"`
+}
+
+type NetworkInterfaceMetric struct {
+	Name    string `json:"name"`
+	RXBytes int64  `json:"rxBytes"`
+	TXBytes int64  `json:"txBytes"`
+	RXLabel string `json:"rxLabel"`
+	TXLabel string `json:"txLabel"`
+}
+
 type MonitorSnapshot struct {
-	SessionID     string          `json:"sessionId"`
-	CPUPercent    int             `json:"cpuPercent"`
-	MemoryPercent int             `json:"memoryPercent"`
-	DiskPercent   int             `json:"diskPercent"`
-	LoadAverage   string          `json:"loadAverage"`
-	Processes     []ProcessMetric `json:"processes"`
-	UpdatedAt     time.Time       `json:"updatedAt"`
+	SessionID            string                   `json:"sessionId"`
+	CPUPercent           int                      `json:"cpuPercent"`
+	CPUIdlePercent       int                      `json:"cpuIdlePercent"`
+	CPUCores             int                      `json:"cpuCores"`
+	MemoryPercent        int                      `json:"memoryPercent"`
+	MemoryTotalLabel     string                   `json:"memoryTotalLabel"`
+	MemoryUsedLabel      string                   `json:"memoryUsedLabel"`
+	MemoryAvailableLabel string                   `json:"memoryAvailableLabel"`
+	DiskPercent          int                      `json:"diskPercent"`
+	DiskTotalLabel       string                   `json:"diskTotalLabel"`
+	DiskUsedLabel        string                   `json:"diskUsedLabel"`
+	DiskAvailableLabel   string                   `json:"diskAvailableLabel"`
+	LoadAverage          string                   `json:"loadAverage"`
+	Processes            []ProcessMetric          `json:"processes"`
+	Filesystems          []FileSystemMetric       `json:"filesystems"`
+	NetworkInterfaces    []NetworkInterfaceMetric `json:"networkInterfaces"`
+	UpdatedAt            time.Time                `json:"updatedAt"`
 }
