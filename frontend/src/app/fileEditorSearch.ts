@@ -24,6 +24,33 @@ export function findEditorSearchMatches(content: string, query: string, matchCas
   }
 }
 
+export function calculateEditorSearchScrollTop(
+  content: string,
+  matchStart: number,
+  viewportHeight: number,
+  lineHeight: number,
+): number {
+  const boundedStart = Math.max(0, Math.min(matchStart, content.length));
+  let lineIndex = 0;
+
+  for (let index = 0; index < boundedStart; index += 1) {
+    if (content.charCodeAt(index) === 10) {
+      lineIndex += 1;
+    }
+  }
+
+  const targetTop = lineIndex * lineHeight;
+  const centeredOffset = Math.max(0, (viewportHeight - lineHeight) / 2);
+  return Math.max(0, Math.round(targetTop - centeredOffset));
+}
+
+export function nextEditorSearchMatchIndex(currentIndex: number, matchCount: number, direction: 1 | -1): number {
+  if (matchCount <= 0) {
+    return 0;
+  }
+  return (currentIndex + direction + matchCount) % matchCount;
+}
+
 export function replaceEditorSearchMatch(content: string, match: FileSearchMatch, replacement: string): string {
   return `${content.slice(0, match.start)}${replacement}${content.slice(match.end)}`;
 }

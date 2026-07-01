@@ -1,1 +1,10 @@
 frontend/node_modules/
+.gstack/
+.DS_Store
+.omx/
+.serena/
+.superpowers/
+artifacts/**/*.png
+build/bin/
+build/darwin/Info.dev.plist
+termflow

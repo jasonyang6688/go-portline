@@ -57,3 +57,22 @@ test("replaces all editor matches and reports the count", () => {
     count: 2,
   });
 });
+
+test("calculates a textarea scroll position that brings a deep match into view", () => {
+  const { calculateEditorSearchScrollTop } = loadModule("fileEditorSearch.ts");
+  const content = `${Array.from({ length: 120 }, (_, index) => `line ${index + 1}`).join("\n")}\ntarget`;
+  const matchStart = content.indexOf("target");
+
+  const scrollTop = calculateEditorSearchScrollTop(content, matchStart, 320, 20);
+
+  assert.equal(scrollTop, 2250);
+});
+
+test("wraps next and previous editor search match indices", () => {
+  const { nextEditorSearchMatchIndex } = loadModule("fileEditorSearch.ts");
+
+  assert.equal(nextEditorSearchMatchIndex(0, 3, 1), 1);
+  assert.equal(nextEditorSearchMatchIndex(2, 3, 1), 0);
+  assert.equal(nextEditorSearchMatchIndex(0, 3, -1), 2);
+  assert.equal(nextEditorSearchMatchIndex(2, 0, 1), 0);
+});

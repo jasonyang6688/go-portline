@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import { resolveTerminalWrite } from "../../app/terminalReplay";
 import { resizeTerminal, writeTerminal } from "../../shared/api/wails";
 import type { Session, TerminalSize } from "../connections/types";
 
@@ -254,17 +255,18 @@ export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, on
     }
 
     const previousBuffer = lastWrittenBufferRef.current;
-    if (terminalBuffer === previousBuffer) {
+    const write = resolveTerminalWrite(previousBuffer, terminalBuffer);
+    if (write.kind === "noop") {
       return;
     }
 
-    if (terminalBuffer.startsWith(previousBuffer)) {
-      terminal.write(terminalBuffer.slice(previousBuffer.length), () => {
+    if (write.kind === "append") {
+      terminal.write(write.data, () => {
         scheduleFitRef.current?.();
       });
     } else {
       terminal.reset();
-      terminal.write(terminalBuffer, () => {
+      terminal.write(write.data, () => {
         scheduleFitRef.current?.();
       });
     }

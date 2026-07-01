@@ -146,6 +146,15 @@ button {
   flex: 1;
   min-width: 0;
   padding: 0 12px;
+  overflow: visible;
+}
+
+.tb-tab-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -224,11 +233,135 @@ button {
 }
 
 .tb-add:hover,
+.tb-add.active,
 .tb-icon-btn:hover,
 .sb-action:hover,
 .tf-icon-btn:hover {
   color: var(--text);
   background: var(--surface0);
+}
+
+.tb-add-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tb-connection-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 240;
+  width: min(320px, calc(100vw - 28px));
+  overflow: hidden;
+  color: var(--text);
+  background: var(--mantle);
+  border: 1px solid var(--surface1);
+  border-radius: var(--r);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+  animation: menuIn 0.12s ease;
+}
+
+.tb-connection-new,
+.tb-connection-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.tb-connection-new {
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--surface0);
+}
+
+.tb-connection-new:hover,
+.tb-connection-item:hover {
+  background: var(--accent-glow);
+}
+
+.tb-connection-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border-radius: var(--r-sm);
+}
+
+.tb-connection-section {
+  padding: 9px 10px 5px;
+  color: var(--overlay0);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tb-connection-list {
+  max-height: min(360px, calc(100vh - 132px));
+  padding: 0 6px 6px;
+  overflow-y: auto;
+}
+
+.tb-connection-item {
+  gap: 9px;
+  height: 46px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+}
+
+.tb-connection-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tb-connection-name,
+.tb-connection-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-connection-name {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.tb-connection-meta {
+  margin-top: 2px;
+  color: var(--overlay1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.tb-connection-state {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  color: var(--green);
+  font-size: 9.5px;
+  font-weight: 700;
+  background: rgba(166, 218, 149, 0.12);
+  border: 1px solid rgba(166, 218, 149, 0.22);
+  border-radius: 999px;
+}
+
+.tb-connection-empty {
+  padding: 12px 8px 14px;
+  color: var(--overlay1);
+  font-size: 12px;
 }
 
 .tb-right {
@@ -3452,10 +3585,28 @@ button {
   font-size: 11px;
 }
 
-.fe-case.active {
+.fe-case.active,
+.fe-wrap.active {
   color: var(--base);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+.fe-editor-toolbar {
+  justify-content: flex-start;
+}
+
+.fe-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fe-editor-hint {
+  margin-left: auto;
+  color: var(--overlay0);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .fe-editor {
@@ -3465,6 +3616,111 @@ button {
   min-height: 0;
   overflow: hidden;
   background: var(--base);
+}
+
+.fe-code-editor {
+  display: block;
+  position: relative;
+}
+
+.fe-code-editor > div,
+.fe-code-editor .cm-editor {
+  height: 100%;
+}
+
+.fe-code-editor .cm-focused {
+  outline: none;
+}
+
+.fe-code-editor .cm-panels {
+  color: var(--text);
+  background: var(--mantle);
+  border-color: var(--surface0);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.fe-code-editor .cm-panel.cm-search {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--mantle);
+  border-bottom: 1px solid var(--surface0);
+}
+
+.fe-code-editor .cm-search br {
+  display: none;
+}
+
+.fe-code-editor .cm-search input:not([type="checkbox"]) {
+  width: clamp(150px, 24vw, 260px);
+  height: 30px;
+  padding: 0 9px;
+  color: var(--text);
+  background: var(--base);
+  border: 1px solid var(--surface0);
+  border-radius: var(--r-sm);
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.fe-code-editor .cm-search input:not([type="checkbox"]):focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.fe-code-editor .cm-search input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.fe-code-editor .cm-search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 30px;
+  padding: 0 10px;
+  color: var(--text) !important;
+  background: var(--surface0) !important;
+  border: 1px solid var(--surface1) !important;
+  border-radius: var(--r-sm);
+  box-shadow: none !important;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.fe-code-editor .cm-search button:hover {
+  color: var(--text) !important;
+  background: var(--surface1) !important;
+  border-color: var(--accent) !important;
+}
+
+.fe-code-editor .cm-search button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.fe-code-editor .cm-search button[name="close"] {
+  min-width: 30px;
+  padding: 0;
+}
+
+.fe-code-editor .cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  color: var(--overlay1);
+  white-space: nowrap;
 }
 
 .fe-lines {
@@ -3482,6 +3738,14 @@ button {
   user-select: none;
 }
 
+.fe-lines.compact {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+  color: var(--overlay1);
+}
+
 .fe-textarea {
   width: 100%;
   height: 100%;
@@ -3497,6 +3761,32 @@ button {
   line-height: 1.6;
   tab-size: 2;
   white-space: pre;
+}
+
+.fe-textarea.wrap {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.fe-textarea::selection {
+  color: var(--base);
+  background: var(--accent);
+}
+
+.fe-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 10px;
+  padding: 24px;
+  color: var(--overlay1);
+  font-size: 13px;
+  text-align: center;
+}
+
+.fe-loading.fe-error {
+  color: var(--red);
 }
 
 .fe-binary {
@@ -6905,6 +7195,17 @@ button {
   from {
     opacity: 0;
     transform: translateY(-10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
   }
   to {
     opacity: 1;
