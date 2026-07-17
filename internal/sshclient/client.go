@@ -245,9 +245,10 @@ func (s *realSession) ListFiles(rawPath string) ([]domain.FileEntry, error) {
 		return nil, err
 	}
 
+	owners, groups := s.resolveRemoteOwnerGroups(entries)
 	files := make([]domain.FileEntry, 0, len(entries))
 	for _, entry := range entries {
-		owner, group := remoteFileOwnerGroup(entry)
+		owner, group := remoteFileOwnerGroup(entry, owners, groups)
 		files = append(files, domain.FileEntry{
 			Name:      entry.Name(),
 			Path:      path.Join(cleanPath, entry.Name()),
@@ -657,12 +658,107 @@ func sortFileEntries(files []domain.FileEntry) {
 	})
 }
 
-func remoteFileOwnerGroup(info os.FileInfo) (string, string) {
+func (s *realSession) resolveRemoteOwnerGroups(entries []os.FileInfo) (map[uint32]string, map[uint32]string) {
+	uids := make(map[uint32]struct{})
+	gids := make(map[uint32]struct{})
+	for _, entry := range entries {
+		stat, ok := entry.Sys().(*sftp.FileStat)
+		if !ok || stat == nil {
+			continue
+		}
+		uids[stat.UID] = struct{}{}
+		gids[stat.GID] = struct{}{}
+	}
+
+	return s.lookupRemoteIDs("passwd", sortedRemoteIDs(uids)), s.lookupRemoteIDs("group", sortedRemoteIDs(gids))
+}
+
+func (s *realSession) lookupRemoteIDs(database string, ids []uint32) map[uint32]string {
+	command := remoteIDLookupCommand(database, ids)
+	if command == "" {
+		return nil
+	}
+	output, err := s.Run(command)
+	if err != nil {
+		return nil
+	}
+	return parseRemoteIDLookupOutput(output)
+}
+
+func sortedRemoteIDs(ids map[uint32]struct{}) []uint32 {
+	values := make([]uint32, 0, len(ids))
+	for id := range ids {
+		values = append(values, id)
+	}
+	sort.Slice(values, func(i, j int) bool {
+		return values[i] < values[j]
+	})
+	return values
+}
+
+func remoteIDLookupCommand(database string, ids []uint32) string {
+	if len(ids) == 0 {
+		return ""
+	}
+
+	var sourcePath string
+	switch database {
+	case "passwd":
+		sourcePath = "/etc/passwd"
+	case "group":
+		sourcePath = "/etc/group"
+	default:
+		return ""
+	}
+
+	idValues := make([]string, 0, len(ids))
+	for _, id := range ids {
+		idValues = append(idValues, strconv.FormatUint(uint64(id), 10))
+	}
+	idList := strings.Join(idValues, " ")
+	return fmt.Sprintf(
+		"{ getent %s %s 2>/dev/null; awk -F: 'BEGIN { split(\"%s\", ids, \" \"); for (i in ids) wanted[ids[i]]=1 } ($3 in wanted) { print }' %s 2>/dev/null; } | awk -F: '!seen[$3]++ { print $3 \"\\t\" $1 }'",
+		database,
+		idList,
+		idList,
+		sourcePath,
+	)
+}
+
+func parseRemoteIDLookupOutput(output []byte) map[uint32]string {
+	names := make(map[uint32]string)
+	for _, line := range strings.Split(string(output), "\n") {
+		idText, name, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok {
+			continue
+		}
+		id, err := strconv.ParseUint(idText, 10, 32)
+		if err != nil {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		names[uint32(id)] = name
+	}
+	return names
+}
+
+func remoteFileOwnerGroup(info os.FileInfo, owners map[uint32]string, groups map[uint32]string) (string, string) {
 	stat, ok := info.Sys().(*sftp.FileStat)
 	if !ok || stat == nil {
 		return "", ""
 	}
-	return strconv.FormatUint(uint64(stat.UID), 10), strconv.FormatUint(uint64(stat.GID), 10)
+	owner := strconv.FormatUint(uint64(stat.UID), 10)
+	group := strconv.FormatUint(uint64(stat.GID), 10)
+	if resolvedOwner := owners[stat.UID]; resolvedOwner != "" {
+		owner = resolvedOwner
+	}
+	if resolvedGroup := groups[stat.GID]; resolvedGroup != "" {
+		group = resolvedGroup
+	}
+	return owner, group
 }
 
 func sizeLabel(size int64, isDir bool) string {

@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 	"termflow/internal/domain"
@@ -63,6 +65,34 @@ func TestBuildClientConfigAllowsExplicitInsecureOptIn(t *testing.T) {
 	}
 }
 
+func TestRemoteFileOwnerGroupUsesResolvedNames(t *testing.T) {
+	info := fakeSFTPFileInfo{stat: &sftp.FileStat{UID: 1000, GID: 33}}
+
+	owner, group := remoteFileOwnerGroup(info, map[uint32]string{1000: "deploy"}, map[uint32]string{33: "www-data"})
+	if owner != "deploy" || group != "www-data" {
+		t.Fatalf("remoteFileOwnerGroup() = %q/%q, want deploy/www-data", owner, group)
+	}
+}
+
+func TestRemoteFileOwnerGroupFallsBackToNumericIDs(t *testing.T) {
+	info := fakeSFTPFileInfo{stat: &sftp.FileStat{UID: 1000, GID: 33}}
+
+	owner, group := remoteFileOwnerGroup(info, nil, nil)
+	if owner != "1000" || group != "33" {
+		t.Fatalf("remoteFileOwnerGroup() = %q/%q, want 1000/33", owner, group)
+	}
+}
+
+func TestParseRemoteIDLookupOutput(t *testing.T) {
+	got := parseRemoteIDLookupOutput([]byte("1000\tdeploy\n33\twww-data\nbad\tignored\n1001\t\n"))
+	if got[1000] != "deploy" || got[33] != "www-data" {
+		t.Fatalf("parseRemoteIDLookupOutput() = %#v, want deploy and www-data mappings", got)
+	}
+	if _, ok := got[1001]; ok {
+		t.Fatalf("parseRemoteIDLookupOutput() included empty username: %#v", got)
+	}
+}
+
 func TestBuildClientConfigUsesKnownHostsByDefault(t *testing.T) {
 	home := t.TempDir()
 	setTestHomeDir(t, home)
@@ -90,6 +120,17 @@ func TestBuildClientConfigUsesKnownHostsByDefault(t *testing.T) {
 		t.Fatal("buildClientConfig() HostKeyCallback = nil")
 	}
 }
+
+type fakeSFTPFileInfo struct {
+	stat *sftp.FileStat
+}
+
+func (f fakeSFTPFileInfo) Name() string       { return "remote.txt" }
+func (f fakeSFTPFileInfo) Size() int64        { return 0 }
+func (f fakeSFTPFileInfo) Mode() os.FileMode  { return 0 }
+func (f fakeSFTPFileInfo) ModTime() time.Time { return time.Unix(0, 0) }
+func (f fakeSFTPFileInfo) IsDir() bool        { return false }
+func (f fakeSFTPFileInfo) Sys() interface{}   { return f.stat }
 
 func TestAuthMethods(t *testing.T) {
 	plainPath, encryptedPath, correctPassphrase := writeTestPrivateKeys(t)
