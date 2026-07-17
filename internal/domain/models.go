@@ -271,6 +271,8 @@ type FileEntry struct {
 	Size      int64     `json:"size"`
 	SizeLabel string    `json:"sizeLabel"`
 	ModTime   time.Time `json:"modTime"`
+	Owner     string    `json:"owner"`
+	Group     string    `json:"group"`
 	IsDir     bool      `json:"isDir"`
 }
 

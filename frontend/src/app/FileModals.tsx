@@ -38,10 +38,11 @@ export function FileDeleteConfirm({
   const { side, entries } = pendingDelete;
   const singleEntry = entries.length === 1 ? entries[0] : null;
   const title = entries.length === 1 ? `Delete ${singleEntry?.isDir ? "Folder" : "File"}` : "Delete Items";
+  const itemWord = entries.length === 1 ? "item" : "items";
   const subtitle =
     side === "remote"
-      ? "This removes the selected remote item from the active SSH session."
-      : "This removes the selected local item from disk.";
+      ? `This removes the selected remote ${itemWord} from the active SSH session.`
+      : `This removes the selected local ${itemWord} from disk.`;
 
   return (
     <div className="danger-overlay" role="presentation" onMouseDown={deleting ? undefined : onCancel}>
@@ -61,11 +62,22 @@ export function FileDeleteConfirm({
             <div className="danger-sub">{subtitle}</div>
           </div>
         </header>
-        <div className="danger-target">
-          <span className="danger-target-name">
-            {singleEntry ? singleEntry.name : `${entries.length} ${side} items`}
-          </span>
-          <span>{singleEntry ? singleEntry.path : entries.map((entry) => entry.name).join(", ")}</span>
+        <div className="danger-body">
+          <div className="danger-target">
+            <span className="danger-target-name">
+              {singleEntry ? singleEntry.name : `${entries.length} ${side} items`}
+            </span>
+            {singleEntry ? <span className="danger-target-detail">{singleEntry.path}</span> : null}
+          </div>
+          {singleEntry ? null : (
+            <ul className="file-delete-list" aria-label="Selected items">
+              {entries.map((entry) => (
+                <li className="file-delete-item" key={`${entry.path}:${entry.name}`}>
+                  {entry.name}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <footer className="danger-actions">
           <button className="btn" type="button" onClick={onCancel} disabled={deleting}>

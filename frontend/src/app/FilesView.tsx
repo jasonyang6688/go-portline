@@ -22,6 +22,8 @@ interface FilesViewProps {
   activeSession: Session | null;
   localFiles: BackendFileEntry[];
   remoteFiles: BackendFileEntry[];
+  localFilesLoading: boolean;
+  remoteFilesLoading: boolean;
   localPath: string;
   remotePath: string;
   transfers: TransferRecord[];
@@ -67,6 +69,8 @@ export function FilesView({
   activeSession,
   localFiles,
   remoteFiles,
+  localFilesLoading,
+  remoteFilesLoading,
   localPath,
   remotePath,
   transfers,
@@ -134,6 +138,7 @@ export function FilesView({
       <div className="files-split">
         <FilesPane
           side="local"
+          isLoading={localFilesLoading}
           path={localPath}
           transferTargetPath={remotePath}
           rows={localFiles}
@@ -158,6 +163,7 @@ export function FilesView({
         <div className="pane-divider" />
         <FilesPane
           side="remote"
+          isLoading={remoteFilesLoading}
           path={remotePath}
           transferTargetPath={localPath}
           rows={remoteFiles}

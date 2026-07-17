@@ -420,6 +420,8 @@ func TestListFilesUsesSFTPFileListing(t *testing.T) {
 		Name:      "app",
 		Path:      "/var/www/app",
 		SizeLabel: "folder",
+		Owner:     "1000",
+		Group:     "1000",
 		IsDir:     true,
 	}, {
 		Name:      "nginx.conf",
@@ -427,6 +429,8 @@ func TestListFilesUsesSFTPFileListing(t *testing.T) {
 		Size:      847,
 		SizeLabel: "847 B",
 		ModTime:   time.Date(2026, 6, 12, 1, 3, 3, 0, time.UTC),
+		Owner:     "33",
+		Group:     "33",
 	}}}
 	runner := &fakeRunner{session: term}
 	registry := sessions.NewRegistry(runner, nil)
@@ -442,6 +446,9 @@ func TestListFilesUsesSFTPFileListing(t *testing.T) {
 	}
 	if len(files) != 2 || !files[0].IsDir || files[1].Name != "nginx.conf" || files[1].Size != 847 {
 		t.Fatalf("files = %#v, want SFTP listing", files)
+	}
+	if files[1].Owner != "33" || files[1].Group != "33" {
+		t.Fatalf("files[1] owner/group = %q/%q, want 33/33", files[1].Owner, files[1].Group)
 	}
 }
 
@@ -491,6 +498,9 @@ func TestLocalFileOperationsReadSaveCreateRenameDelete(t *testing.T) {
 	foundLowercaseFolder := false
 	for _, file := range files {
 		if file.Name == "lowercase-folder" && file.IsDir {
+			if file.Owner == "" || file.Group == "" {
+				t.Fatalf("local file owner/group = %q/%q, want non-empty user and group", file.Owner, file.Group)
+			}
 			foundLowercaseFolder = true
 			break
 		}

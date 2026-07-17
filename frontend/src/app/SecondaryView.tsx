@@ -31,6 +31,7 @@ export function SecondaryView({
   activeSession,
   localFiles,
   remoteFiles,
+  fileListLoading,
   localPath,
   remotePath,
   transfers,
@@ -72,6 +73,7 @@ export function SecondaryView({
   activeSession: Session | null;
   localFiles: BackendFileEntry[];
   remoteFiles: BackendFileEntry[];
+  fileListLoading: { local: boolean; remote: boolean };
   localPath: string;
   remotePath: string;
   transfers: TransferRecord[];
@@ -115,6 +117,8 @@ export function SecondaryView({
         activeSession={activeSession}
         localFiles={localFiles}
         remoteFiles={remoteFiles}
+        localFilesLoading={fileListLoading.local}
+        remoteFilesLoading={fileListLoading.remote}
         localPath={localPath}
         remotePath={remotePath}
         transfers={transfers}

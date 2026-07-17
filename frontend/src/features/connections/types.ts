@@ -200,6 +200,8 @@ export interface FileEntry {
   size: number;
   sizeLabel: string;
   modTime: string;
+  owner: string;
+  group: string;
   isDir: boolean;
 }
 

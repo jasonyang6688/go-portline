@@ -79,6 +79,8 @@ type APIFileEntry struct {
 	Size      int64  `json:"size"`
 	SizeLabel string `json:"sizeLabel"`
 	ModTime   string `json:"modTime"`
+	Owner     string `json:"owner"`
+	Group     string `json:"group"`
 	IsDir     bool   `json:"isDir"`
 }
 
@@ -227,6 +229,8 @@ func apiFileEntry(file domain.FileEntry) APIFileEntry {
 		Size:      file.Size,
 		SizeLabel: file.SizeLabel,
 		ModTime:   apiTime(file.ModTime),
+		Owner:     file.Owner,
+		Group:     file.Group,
 		IsDir:     file.IsDir,
 	}
 }

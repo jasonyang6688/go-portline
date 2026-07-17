@@ -17,6 +17,7 @@ type ContextMenuPoint = {
 
 interface FilesPaneProps {
   side: FilePaneSide;
+  isLoading: boolean;
   path: string;
   transferTargetPath: string;
   rows: BackendFileEntry[];
@@ -58,6 +59,13 @@ function formatFileDate(value: string): string {
   return date.toLocaleString("zh-CN", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+function formatOwnerGroup(entry: BackendFileEntry): string {
+  if (!entry.owner && !entry.group) {
+    return "";
+  }
+  return `${entry.owner || "-"}:${entry.group || "-"}`;
+}
+
 function contextMenuPoint(event: ReactMouseEvent): ContextMenuPoint {
   return {
     x: Math.min(event.clientX, window.innerWidth - 220),
@@ -84,6 +92,7 @@ function fileGlyph(entry: BackendFileEntry): string {
 
 export function FilesPane({
   side,
+  isLoading,
   path,
   transferTargetPath,
   rows,
@@ -108,6 +117,7 @@ export function FilesPane({
   const paneRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const transferLabel = side === "local" ? "Upload" : "Download";
+  const loadingLabel = side === "local" ? "Loading local files..." : "Loading remote files...";
   const selectedSet = useMemo(() => new Set(selectedNames), [selectedNames]);
   const selectedEntries = rows.filter((row) => selectedSet.has(row.name));
   const selectedEntry = selectedEntries[0] ?? rows[0] ?? null;
@@ -229,7 +239,8 @@ export function FilesPane({
 
   return (
     <div
-      className="files-pane"
+      aria-busy={isLoading}
+      className={`files-pane${isLoading ? " is-loading" : ""}`}
       ref={paneRef}
       onPointerDownCapture={activateSelection}
       onFocusCapture={() => setSelectionActive(true)}
@@ -241,21 +252,23 @@ export function FilesPane({
           <input
             aria-label={`${side} path`}
             className="fp-path-input"
+            disabled={isLoading}
             value={pathDraft}
             onChange={(event) => setPathDraft(event.target.value)}
           />
-          <button className="fp-btn" type="submit">Go</button>
+          <button className="fp-btn" type="submit" disabled={isLoading}>Go</button>
         </form>
         <div className="fp-actions">
-          <button className="fp-btn" type="button" title="Go up" onClick={onUp}>↑</button>
+          <button className="fp-btn" type="button" title="Go up" onClick={onUp} disabled={isLoading}>↑</button>
           {side === "local" ? (
-            <button className="fp-btn" type="button" title="Upload local folder" onClick={onUploadFolder}><Icon name="files" size={13} /></button>
+            <button className="fp-btn" type="button" title="Upload local folder" onClick={onUploadFolder} disabled={isLoading}><Icon name="files" size={13} /></button>
           ) : null}
-          <button className="fp-btn" type="button" title="Refresh" onClick={onRefresh}><Icon name="refresh" size={12} /></button>
+          <button className="fp-btn" type="button" title="Refresh" onClick={onRefresh} disabled={isLoading}><Icon name="refresh" size={12} /></button>
           <button
             className="fp-btn"
             type="button"
             title={activeTransferEntries.length > 1 ? `${transferLabel} selected` : selectedEntry?.isDir ? transferLabel : transferLabel}
+            disabled={isLoading || activeTransferEntries.length === 0}
             onClick={() => {
               if (activeTransferEntries.length === 0) {
                 return;
@@ -270,7 +283,7 @@ export function FilesPane({
       <div className="files-toolbar">
         <span className="files-toolbar-label">Path:</span>
         {pathSegments(path).map((segment) => (
-          <button className="files-crumb" type="button" key={`${side}-${segment.path}`} onClick={() => onOpenPath(segment.path)}>
+          <button className="files-crumb" type="button" key={`${side}-${segment.path}`} onClick={() => onOpenPath(segment.path)} disabled={isLoading}>
             {segment.label}
           </button>
         ))}
@@ -282,6 +295,12 @@ export function FilesPane({
         onKeyDown={handleListKeyDown}
         onContextMenu={(event) => openMenu(event, null)}
       >
+        {isLoading ? (
+          <div className="files-loading" role="status" aria-live="polite">
+            <span className="files-spinner" aria-hidden="true" />
+            <span>{loadingLabel}</span>
+          </div>
+        ) : null}
         {rows.map((row) => (
           <div
             className={`f-item${selectedSet.has(row.name) ? " selected" : ""}`}
@@ -306,6 +325,7 @@ export function FilesPane({
             <span className="f-item-meta">
               <span className="f-item-size">{row.sizeLabel}</span>
               <span className="f-item-date">{formatFileDate(row.modTime)}</span>
+              <span className="f-item-owner">{formatOwnerGroup(row)}</span>
             </span>
             <span className="f-row-actions">
               <button className="f-act go" type="button" title={row.isDir ? "Open folder" : transferLabel} onClick={(event) => {

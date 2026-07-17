@@ -23,7 +23,6 @@ import type { TransferRecord } from "./useFileTransfers";
 type TerminalViewProps = {
   activeConnection: Connection | null;
   activeSession: Session | null;
-  activeTerminalBuffer: string;
   activeTerminalFullscreen: boolean;
   commandHistory: CommandHistoryEntry[];
   commandHistoryQuery: string;
@@ -32,9 +31,12 @@ type TerminalViewProps = {
   monitorHistory: MonitorHistory;
   monitorSnapshot: MonitorSnapshot | null;
   remoteFiles: BackendFileEntry[];
+  remoteFilesLoading: boolean;
   remotePath: string;
   savedCommands: SavedCommand[];
+  sessions: Session[];
   terminalBroadcast: boolean;
+  terminalBuffers: Record<string, string>;
   terminalCPU: number;
   terminalCPUHistory: number[];
   terminalCPUHistoryMax: number;
@@ -90,7 +92,6 @@ type TerminalViewProps = {
 export function TerminalView({
   activeConnection,
   activeSession,
-  activeTerminalBuffer,
   activeTerminalFullscreen,
   commandHistory,
   commandHistoryQuery,
@@ -99,9 +100,12 @@ export function TerminalView({
   monitorHistory,
   monitorSnapshot,
   remoteFiles,
+  remoteFilesLoading,
   remotePath,
   savedCommands,
+  sessions,
   terminalBroadcast,
+  terminalBuffers,
   terminalCPU,
   terminalCPUHistory,
   terminalCPUHistoryMax,
@@ -170,8 +174,9 @@ export function TerminalView({
       />
       <div className="terminal-stage terminal-stage-alerts">
         <TerminalPane
-          session={activeSession}
-          terminalBuffer={activeTerminalBuffer}
+          activeSessionId={activeSession?.id ?? null}
+          sessions={sessions}
+          terminalBuffers={terminalBuffers}
           themeMode={theme}
           layoutKey={terminalLayoutKey}
           onTerminalSizeChange={onTerminalSizeChange}
@@ -191,6 +196,7 @@ export function TerminalView({
         {terminalDock === "files" ? (
           <TerminalFilesDock
             files={remoteFiles}
+            isLoading={remoteFilesLoading}
             path={remotePath}
             hasSession={Boolean(activeSession)}
             transfers={transfers}

@@ -89,9 +89,11 @@ export default function App() {
   const [commandHistoryScope, setCommandHistoryScope] = useState<CommandHistoryScope>("host");
   const [localFiles, setLocalFiles] = useState<BackendFileEntry[]>([]);
   const [remoteFiles, setRemoteFiles] = useState<BackendFileEntry[]>([]);
+  const [fileListLoading, setFileListLoading] = useState({ local: false, remote: false });
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [localPath, setLocalPath] = useState(DEFAULT_LOCAL_PATH);
   const [remotePathBySession, setRemotePathBySession] = useState<Record<string, string>>({});
+  const fileListRequestsRef = useRef({ local: 0, remote: 0 });
   const liveSessionIdsRef = useRef<Set<string>>(new Set());
   const fullscreenTerminalSessionsRef = useRef<Record<string, boolean>>({});
   const pendingCwdSyncRef = useRef<PendingCwdSync | null>(null);
@@ -353,17 +355,41 @@ export default function App() {
     });
   }
 
+  function startFileListLoading(side: "local" | "remote"): number {
+    const requestId = fileListRequestsRef.current[side] + 1;
+    fileListRequestsRef.current = {
+      ...fileListRequestsRef.current,
+      [side]: requestId,
+    };
+    setFileListLoading((current) => current[side] ? current : { ...current, [side]: true });
+    return requestId;
+  }
+
+  function finishFileListLoading(side: "local" | "remote", requestId: number) {
+    if (fileListRequestsRef.current[side] !== requestId) {
+      return;
+    }
+    setFileListLoading((current) => current[side] ? { ...current, [side]: false } : current);
+  }
+
   async function refreshLocalFiles(path = localPath) {
     if (!backendAvailable) {
       setLocalFiles(DEMO_LOCAL_FILES);
       return;
     }
+    const requestId = startFileListLoading("local");
     try {
       const files = await listFiles({ side: "local", path });
-      setLocalPath(path);
-      setLocalFiles(files);
+      if (fileListRequestsRef.current.local === requestId) {
+        setLocalPath(path);
+        setLocalFiles(files);
+      }
     } catch (error) {
-      setStatus(messageFromError(error));
+      if (fileListRequestsRef.current.local === requestId) {
+        setStatus(messageFromError(error));
+      }
+    } finally {
+      finishFileListLoading("local", requestId);
     }
   }
 
@@ -372,6 +398,7 @@ export default function App() {
     if (!session) {
       setStatus("No active session");
       setRemoteFiles([]);
+      setFileListLoading((current) => current.remote ? { ...current, remote: false } : current);
       return;
     }
     const nextPath = normalizeRemotePath(path);
@@ -381,12 +408,19 @@ export default function App() {
       setStatus(`Preview files: ${nextPath}`);
       return;
     }
+    const requestId = startFileListLoading("remote");
     try {
       const files = await listFiles({ side: "remote", sessionId: session.id, path: nextPath });
-      setSessionRemotePath(session.id, nextPath);
-      setRemoteFiles(files);
+      if (fileListRequestsRef.current.remote === requestId) {
+        setSessionRemotePath(session.id, nextPath);
+        setRemoteFiles(files);
+      }
     } catch (error) {
-      setStatus(messageFromError(error));
+      if (fileListRequestsRef.current.remote === requestId) {
+        setStatus(messageFromError(error));
+      }
+    } finally {
+      finishFileListLoading("remote", requestId);
     }
   }
 
@@ -510,7 +544,6 @@ export default function App() {
     onSetView: setActiveView,
   });
   const terminalIsProd = isProductionConnection(activeConnection);
-  const activeTerminalBuffer = activeSession ? terminalBuffers[activeSession.id] ?? "" : "";
   const activeTerminalFullscreen = activeSession ? fullscreenTerminalSessions[activeSession.id] === true : false;
   const terminalLayoutKey = [
     activeSession?.id ?? "none",
@@ -589,7 +622,6 @@ export default function App() {
             <TerminalView
               activeConnection={activeConnection}
               activeSession={activeSession}
-              activeTerminalBuffer={activeTerminalBuffer}
               activeTerminalFullscreen={activeTerminalFullscreen}
               commandHistory={commandHistory}
               commandHistoryQuery={commandHistoryQuery}
@@ -598,9 +630,12 @@ export default function App() {
               monitorHistory={monitorHistory}
               monitorSnapshot={monitorSnapshot}
               remoteFiles={remoteFiles}
+              remoteFilesLoading={fileListLoading.remote}
               remotePath={remotePath}
               savedCommands={savedCommands}
+              sessions={sessions}
               terminalBroadcast={terminalBroadcast}
+              terminalBuffers={terminalBuffers}
               terminalCPU={terminalCPU}
               terminalCPUHistory={terminalCPUHistory}
               terminalCPUHistoryMax={terminalCPUHistoryMax}
@@ -676,6 +711,7 @@ export default function App() {
                 activeSession={activeSession}
                 localFiles={localFiles}
                 remoteFiles={remoteFiles}
+                fileListLoading={fileListLoading}
                 localPath={localPath}
                 remotePath={remotePath}
                 transfers={transfers}

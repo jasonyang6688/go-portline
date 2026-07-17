@@ -1,19 +1,46 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import {
+  copyTerminalSelection,
+  pasteClipboardToTerminal,
+  terminalClipboardShortcutAction,
+} from "../../app/terminalClipboard";
+import { shouldUseTerminalKeyboardFallback, terminalKeyDataFromKeyboardEvent } from "../../app/terminalKeyboard";
 import { resolveTerminalWrite } from "../../app/terminalReplay";
+import { reconcileTerminalSessions } from "../../app/terminalSessions";
 import { resizeTerminal, writeTerminal } from "../../shared/api/wails";
 import type { Session, TerminalSize } from "../connections/types";
 
 interface Props {
-  session: Session | null;
-  terminalBuffer: string;
+  activeSessionId: string | null;
+  sessions: Session[];
+  terminalBuffers: Record<string, string>;
   themeMode: "dark" | "light";
   layoutKey?: string;
   onTerminalSizeChange?(size: TerminalSize): void;
   onFullscreenChange?(sessionId: string, fullscreen: boolean): void;
   onCommandCommit?(command: string): void;
 }
+
+type Disposable = {
+  dispose(): void;
+};
+
+type TerminalEntry = {
+  terminal: Terminal;
+  fitAddon: FitAddon;
+  resizeObserver: ResizeObserver;
+  clipboardDisposable: Disposable;
+  inputDisposable: Disposable;
+  writeParsedDisposable: Disposable;
+  lastSentSize: TerminalSize | null;
+  lastWrittenBuffer: string;
+  fullscreen: boolean;
+  pendingCommand: string;
+  fitFrameId: number | null;
+  settledFrameId: number | null;
+};
 
 const DARK_TERMINAL_THEME = {
   background: "#0b0d14",
@@ -67,21 +94,63 @@ const LIGHT_TERMINAL_THEME = {
 
 const MINIMUM_TERMINAL_CONTRAST_RATIO = 4.5;
 
-export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, onTerminalSizeChange, onFullscreenChange, onCommandCommit }: Props) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const terminalRef = useRef<Terminal | null>(null);
-  const lastSentSizeRef = useRef<TerminalSize | null>(null);
-  const lastWrittenBufferRef = useRef("");
+export function TerminalPane({
+  activeSessionId,
+  sessions,
+  terminalBuffers,
+  themeMode,
+  layoutKey,
+  onTerminalSizeChange,
+  onFullscreenChange,
+  onCommandCommit,
+}: Props) {
+  const hostRefs = useRef(new Map<string, HTMLDivElement>());
+  const terminalEntriesRef = useRef(new Map<string, TerminalEntry>());
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
   const sizeChangeRef = useRef<Props["onTerminalSizeChange"]>(onTerminalSizeChange);
   const fullscreenChangeRef = useRef<Props["onFullscreenChange"]>(onFullscreenChange);
   const commandCommitRef = useRef<Props["onCommandCommit"]>(onCommandCommit);
-  const fullscreenRef = useRef(false);
-  const pendingCommandRef = useRef("");
-  const scheduleFitRef = useRef<(() => void) | null>(null);
-  const fitAfterLayoutRef = useRef<(() => void) | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number; canCopy: boolean } | null>(
+    null,
+  );
 
   const focusTerminal = useCallback(() => {
-    terminalRef.current?.focus();
+    const activeSession = activeSessionIdRef.current;
+    if (!activeSession) {
+      return;
+    }
+    terminalEntriesRef.current.get(activeSession)?.terminal.focus();
+  }, []);
+
+  const clipboard = () => (typeof navigator === "undefined" ? undefined : navigator.clipboard);
+
+  const copySessionSelection = useCallback(async (sessionId: string) => {
+    const entry = terminalEntriesRef.current.get(sessionId);
+    if (!entry) {
+      return false;
+    }
+    const copied = await copyTerminalSelection(entry.terminal.getSelection(), clipboard());
+    if (copied) {
+      entry.terminal.clearSelection();
+      entry.terminal.focus();
+    }
+    return copied;
+  }, []);
+
+  const pasteToSession = useCallback(async (sessionId: string) => {
+    const entry = terminalEntriesRef.current.get(sessionId);
+    if (!entry) {
+      return false;
+    }
+    return pasteClipboardToTerminal(entry.terminal, clipboard());
+  }, []);
+
+  const setHostRef = useCallback((sessionId: string, host: HTMLDivElement | null) => {
+    if (host) {
+      hostRefs.current.set(sessionId, host);
+      return;
+    }
+    hostRefs.current.delete(sessionId);
   }, []);
 
   useEffect(() => {
@@ -97,10 +166,88 @@ export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, on
   }, [onCommandCommit]);
 
   useEffect(() => {
-    if (!session || !hostRef.current) {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  const writeToSession = useCallback((sessionId: string, data: string) => {
+    try {
+      void writeTerminal(sessionId, data).catch(() => {});
+    } catch {
+      // The browser-only preview has no Wails runtime.
+    }
+  }, []);
+
+  const disposeTerminalEntry = useCallback((sessionId: string) => {
+    const entry = terminalEntriesRef.current.get(sessionId);
+    if (!entry) {
       return;
     }
+    if (entry.fitFrameId !== null) {
+      window.cancelAnimationFrame(entry.fitFrameId);
+    }
+    if (entry.settledFrameId !== null) {
+      window.cancelAnimationFrame(entry.settledFrameId);
+    }
+    entry.resizeObserver.disconnect();
+    entry.clipboardDisposable.dispose();
+    entry.inputDisposable.dispose();
+    entry.writeParsedDisposable.dispose();
+    if (entry.fullscreen) {
+      fullscreenChangeRef.current?.(sessionId, false);
+    }
+    entry.terminal.dispose();
+    terminalEntriesRef.current.delete(sessionId);
+  }, []);
 
+  const syncTerminalSize = useCallback((sessionId: string) => {
+    if (activeSessionIdRef.current !== sessionId) {
+      return;
+    }
+    const entry = terminalEntriesRef.current.get(sessionId);
+    if (!entry) {
+      return;
+    }
+    entry.fitAddon.fit();
+    const size = { cols: entry.terminal.cols, rows: entry.terminal.rows };
+    if (size.cols <= 0 || size.rows <= 0) {
+      return;
+    }
+    const lastSentSize = entry.lastSentSize;
+    if (lastSentSize?.cols === size.cols && lastSentSize.rows === size.rows) {
+      return;
+    }
+    entry.lastSentSize = size;
+    sizeChangeRef.current?.(size);
+    try {
+      void resizeTerminal(sessionId, size).catch(() => {});
+    } catch {
+      // The browser-only preview has no Wails runtime.
+    }
+  }, []);
+
+  const scheduleTerminalFit = useCallback((sessionId: string) => {
+    const entry = terminalEntriesRef.current.get(sessionId);
+    if (!entry || entry.fitFrameId !== null) {
+      return;
+    }
+    entry.fitFrameId = window.requestAnimationFrame(() => {
+      entry.fitFrameId = null;
+      syncTerminalSize(sessionId);
+    });
+  }, [syncTerminalSize]);
+
+  const fitAfterLayout = useCallback((sessionId: string) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        syncTerminalSize(sessionId);
+        if (activeSessionIdRef.current === sessionId) {
+          terminalEntriesRef.current.get(sessionId)?.terminal.focus();
+        }
+      });
+    });
+  }, [syncTerminalSize]);
+
+  const createTerminalEntry = useCallback((session: Session, host: HTMLDivElement) => {
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: true,
@@ -112,168 +259,255 @@ export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, on
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.open(hostRef.current);
-    hostRef.current.querySelector("textarea")?.setAttribute("name", "xterm-terminal-input");
-    terminal.focus();
+    terminal.open(host);
+    host.querySelector("textarea")?.setAttribute("name", "xterm-terminal-input");
 
-    terminalRef.current = terminal;
-    lastSentSizeRef.current = null;
-    lastWrittenBufferRef.current = "";
-    fullscreenRef.current = false;
-    pendingCommandRef.current = "";
-    let fitFrameId: number | null = null;
+    const entry = {
+      terminal,
+      fitAddon,
+      resizeObserver: undefined as unknown as ResizeObserver,
+      clipboardDisposable: undefined as unknown as Disposable,
+      inputDisposable: undefined as unknown as Disposable,
+      writeParsedDisposable: undefined as unknown as Disposable,
+      lastSentSize: null,
+      lastWrittenBuffer: "",
+      fullscreen: false,
+      pendingCommand: "",
+      fitFrameId: null,
+      settledFrameId: null,
+    };
 
     const syncFullscreenState = () => {
-      const fullscreen = terminal.buffer.active.type === "alternate";
-      if (fullscreenRef.current === fullscreen) {
+      const fullscreen = entry.terminal.buffer.active.type === "alternate";
+      if (entry.fullscreen === fullscreen) {
         return;
       }
-      fullscreenRef.current = fullscreen;
+      entry.fullscreen = fullscreen;
       fullscreenChangeRef.current?.(session.id, fullscreen);
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          syncTerminalSize();
-          terminal.focus();
-        });
-      });
+      fitAfterLayout(session.id);
     };
 
-    const syncTerminalSize = () => {
-      fitAddon.fit();
-      const size = { cols: terminal.cols, rows: terminal.rows };
-      if (size.cols <= 0 || size.rows <= 0) {
-        return;
-      }
-      const lastSentSize = lastSentSizeRef.current;
-      if (lastSentSize?.cols === size.cols && lastSentSize.rows === size.rows) {
-        return;
-      }
-      lastSentSizeRef.current = size;
-      sizeChangeRef.current?.(size);
-      try {
-        void resizeTerminal(session.id, size).catch(() => {});
-      } catch {
-        // The browser-only preview has no Wails runtime.
-      }
-    };
-
-    const scheduleTerminalFit = () => {
-      if (fitFrameId !== null) {
-        return;
-      }
-      fitFrameId = window.requestAnimationFrame(() => {
-        fitFrameId = null;
-        syncTerminalSize();
-      });
-    };
-    scheduleFitRef.current = scheduleTerminalFit;
-    fitAfterLayoutRef.current = () => {
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          syncTerminalSize();
-          terminal.focus();
-        });
-      });
-    };
-
-    const inputDisposable = terminal.onData((data) => {
-      if (!fullscreenRef.current && !data.startsWith("\u001b")) {
+    entry.inputDisposable = terminal.onData((data) => {
+      if (!entry.fullscreen && !data.startsWith("\u001b")) {
         for (const char of data) {
           if (char === "\r" || char === "\n") {
-            const command = pendingCommandRef.current.trim();
-            pendingCommandRef.current = "";
+            const command = entry.pendingCommand.trim();
+            entry.pendingCommand = "";
             if (command) {
               commandCommitRef.current?.(command);
             }
             continue;
           }
           if (char === "\u0003") {
-            pendingCommandRef.current = "";
+            entry.pendingCommand = "";
             continue;
           }
           if (char === "\u007f" || char === "\b") {
-            pendingCommandRef.current = pendingCommandRef.current.slice(0, -1);
+            entry.pendingCommand = entry.pendingCommand.slice(0, -1);
             continue;
           }
           if (char === "\u0015") {
-            pendingCommandRef.current = "";
+            entry.pendingCommand = "";
             continue;
           }
           if (char >= " ") {
-            pendingCommandRef.current += char;
+            entry.pendingCommand += char;
           }
         }
       }
-      try {
-        void writeTerminal(session.id, data).catch(() => {});
-      } catch {
-        // The browser-only preview has no Wails runtime.
-      }
+      writeToSession(session.id, data);
     });
-    const writeParsedDisposable = terminal.onWriteParsed(syncFullscreenState);
+    entry.writeParsedDisposable = terminal.onWriteParsed(syncFullscreenState);
 
-    const resizeObserver = new ResizeObserver(() => {
-      scheduleTerminalFit();
-    });
-    resizeObserver.observe(hostRef.current);
-
-    scheduleTerminalFit();
-    const settledFrameId = window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(syncTerminalSize);
-    });
-
-    return () => {
-      if (fitFrameId !== null) {
-        window.cancelAnimationFrame(fitFrameId);
+    const handleCopy = (event: ClipboardEvent) => {
+      const selection = terminal.getSelection();
+      if (!selection || !event.clipboardData) {
+        return;
       }
-      window.cancelAnimationFrame(settledFrameId);
-      resizeObserver.disconnect();
-      inputDisposable.dispose();
-      writeParsedDisposable.dispose();
-      if (fullscreenRef.current) {
-        fullscreenChangeRef.current?.(session.id, false);
-      }
-      terminalRef.current = null;
-      lastSentSizeRef.current = null;
-      lastWrittenBufferRef.current = "";
-      fullscreenRef.current = false;
-      pendingCommandRef.current = "";
-      scheduleFitRef.current = null;
-      fitAfterLayoutRef.current = null;
-      terminal.dispose();
+      event.preventDefault();
+      event.stopPropagation();
+      event.clipboardData.setData("text/plain", selection);
+      terminal.clearSelection();
+      terminal.focus();
     };
-  }, [session?.id, themeMode]);
 
-  useEffect(() => {
-    fitAfterLayoutRef.current?.();
-  }, [layoutKey]);
+    const handlePaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      terminal.focus();
+      terminal.paste(text);
+    };
 
-  useEffect(() => {
-    const terminal = terminalRef.current;
-    if (!session || !terminal) {
+    const handleClipboardKeyDown = (event: KeyboardEvent) => {
+      const action = terminalClipboardShortcutAction(event, Boolean(terminal.getSelection()));
+      if (!action) {
+        return;
+      }
+      const supportsClipboard =
+        action === "copy" ? Boolean(clipboard()?.writeText) : Boolean(clipboard()?.readText);
+      if (!supportsClipboard) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (action === "copy") {
+        void copySessionSelection(session.id).catch(() => {});
+      } else {
+        void pasteToSession(session.id).catch(() => {});
+      }
+    };
+
+    host.addEventListener("copy", handleCopy);
+    host.addEventListener("paste", handlePaste);
+    host.addEventListener("keydown", handleClipboardKeyDown, true);
+    entry.clipboardDisposable = {
+      dispose() {
+        host.removeEventListener("copy", handleCopy);
+        host.removeEventListener("paste", handlePaste);
+        host.removeEventListener("keydown", handleClipboardKeyDown, true);
+      },
+    };
+
+    entry.resizeObserver = new ResizeObserver(() => {
+      scheduleTerminalFit(session.id);
+    });
+    entry.resizeObserver.observe(host);
+    terminalEntriesRef.current.set(session.id, entry);
+    scheduleTerminalFit(session.id);
+    entry.settledFrameId = window.requestAnimationFrame(() => {
+      entry.settledFrameId = null;
+      window.requestAnimationFrame(() => syncTerminalSize(session.id));
+    });
+  }, [copySessionSelection, fitAfterLayout, pasteToSession, scheduleTerminalFit, syncTerminalSize, themeMode, writeToSession]);
+
+  const registerTerminalHost = useCallback((session: Session, host: HTMLDivElement | null) => {
+    setHostRef(session.id, host);
+    if (!host || terminalEntriesRef.current.has(session.id)) {
       return;
     }
+    createTerminalEntry(session, host);
+  }, [createTerminalEntry, setHostRef]);
 
-    const previousBuffer = lastWrittenBufferRef.current;
-    const write = resolveTerminalWrite(previousBuffer, terminalBuffer);
-    if (write.kind === "noop") {
+  useLayoutEffect(() => {
+    const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+    const { createIds, disposeIds } = reconcileTerminalSessions(terminalEntriesRef.current.keys(), sessions);
+    disposeIds.forEach(disposeTerminalEntry);
+
+    for (const sessionId of createIds) {
+      const session = sessionsById.get(sessionId);
+      const host = hostRefs.current.get(sessionId);
+      if (session && host) {
+        createTerminalEntry(session, host);
+      }
+    }
+
+    const theme = themeMode === "light" ? LIGHT_TERMINAL_THEME : DARK_TERMINAL_THEME;
+    for (const entry of terminalEntriesRef.current.values()) {
+      entry.terminal.options.theme = theme;
+    }
+  }, [createTerminalEntry, disposeTerminalEntry, sessions, themeMode]);
+
+  useEffect(() => () => {
+    for (const sessionId of [...terminalEntriesRef.current.keys()]) {
+      disposeTerminalEntry(sessionId);
+    }
+  }, [disposeTerminalEntry]);
+
+  useEffect(() => {
+    if (!activeSessionId) {
       return;
     }
+    fitAfterLayout(activeSessionId);
+  }, [activeSessionId, fitAfterLayout, layoutKey]);
 
-    if (write.kind === "append") {
-      terminal.write(write.data, () => {
-        scheduleFitRef.current?.();
-      });
-    } else {
-      terminal.reset();
-      terminal.write(write.data, () => {
-        scheduleFitRef.current?.();
-      });
+  useEffect(() => {
+    const handleFullscreenKeyDown = (event: KeyboardEvent) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        return;
+      }
+      const entry = terminalEntriesRef.current.get(sessionId);
+      if (!entry?.fullscreen || !shouldUseTerminalKeyboardFallback(event.target)) {
+        return;
+      }
+      const data = terminalKeyDataFromKeyboardEvent(event);
+      if (!data) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      entry.terminal.focus();
+      writeToSession(sessionId, data);
+    };
+
+    window.addEventListener("keydown", handleFullscreenKeyDown, true);
+    return () => window.removeEventListener("keydown", handleFullscreenKeyDown, true);
+  }, [writeToSession]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
     }
-    lastWrittenBufferRef.current = terminalBuffer;
-  }, [session, terminalBuffer]);
+    const dismiss = () => setContextMenu(null);
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", dismiss);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", dismiss);
+    };
+  }, [contextMenu]);
 
-  if (!session) {
+  const handleCanvasPointerDown = useCallback(() => {
+    setContextMenu(null);
+    focusTerminal();
+  }, [focusTerminal]);
+
+  const handleTerminalContextMenu = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    const sessionId = activeSessionIdRef.current;
+    if (!sessionId) {
+      return;
+    }
+    const entry = terminalEntriesRef.current.get(sessionId);
+    if (!entry) {
+      return;
+    }
+    event.preventDefault();
+    setContextMenu({
+      sessionId,
+      x: event.clientX,
+      y: event.clientY,
+      canCopy: Boolean(entry.terminal.getSelection()),
+    });
+  }, []);
+
+  useEffect(() => {
+    for (const [sessionId, entry] of terminalEntriesRef.current.entries()) {
+      const terminalBuffer = terminalBuffers[sessionId] ?? "";
+      const previousBuffer = entry.lastWrittenBuffer;
+      const write = resolveTerminalWrite(previousBuffer, terminalBuffer);
+      if (write.kind === "noop") {
+        continue;
+      }
+
+      if (write.kind === "append") {
+        entry.terminal.write(write.data, () => {
+          scheduleTerminalFit(sessionId);
+        });
+      } else {
+        entry.terminal.reset();
+        entry.terminal.write(write.data, () => {
+          scheduleTerminalFit(sessionId);
+        });
+      }
+      entry.lastWrittenBuffer = terminalBuffer;
+    }
+  }, [scheduleTerminalFit, sessions, terminalBuffers]);
+
+  if (!activeSessionId || sessions.length === 0) {
     return (
       <div className="terminal-empty-state" role="status" aria-live="polite">
         <strong>No active SSH session</strong>
@@ -283,8 +517,46 @@ export function TerminalPane({ session, terminalBuffer, themeMode, layoutKey, on
   }
 
   return (
-    <div className="terminal-canvas" onPointerDown={focusTerminal}>
-      <div className="terminal-host" ref={hostRef} />
-    </div>
+    <>
+      <div className="terminal-canvas" onContextMenu={handleTerminalContextMenu} onPointerDown={handleCanvasPointerDown}>
+        {sessions.map((session) => (
+          <div
+            aria-hidden={session.id !== activeSessionId}
+            className={`terminal-host${session.id === activeSessionId ? " terminal-host--active" : ""}`}
+            data-session-id={session.id}
+            key={session.id}
+            ref={(host) => registerTerminalHost(session, host)}
+          />
+        ))}
+      </div>
+      {contextMenu ? (
+        <div
+          className="terminal-clipboard-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            disabled={!contextMenu.canCopy}
+            onClick={() => {
+              void copySessionSelection(contextMenu.sessionId);
+              setContextMenu(null);
+            }}
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void pasteToSession(contextMenu.sessionId);
+              setContextMenu(null);
+            }}
+          >
+            Paste
+          </button>
+        </div>
+      ) : null}
+    </>
   );
 }

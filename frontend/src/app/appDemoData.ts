@@ -240,19 +240,19 @@ function joinDemoPath(base: string, name: string): string {
 }
 
 function demoDir(basePath: string, name: string): BackendFileEntry {
-  return { name, path: joinDemoPath(basePath, name), size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true };
+  return { name, path: joinDemoPath(basePath, name), size: 0, sizeLabel: "--", modTime: DEMO_NOW, owner: "ubuntu", group: "www-data", isDir: true };
 }
 
 function demoFile(basePath: string, name: string, size: number): BackendFileEntry {
-  return { name, path: joinDemoPath(basePath, name), size, sizeLabel: formatBytes(size), modTime: DEMO_NOW, isDir: false };
+  return { name, path: joinDemoPath(basePath, name), size, sizeLabel: formatBytes(size), modTime: DEMO_NOW, owner: "ubuntu", group: "www-data", isDir: false };
 }
 
 export const DEMO_LOCAL_FILES: BackendFileEntry[] = [
-  { name: "frontend", path: "/Projects/go-termflow/frontend", size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true },
-  { name: "internal", path: "/Projects/go-termflow/internal", size: 0, sizeLabel: "--", modTime: DEMO_NOW, isDir: true },
-  { name: "main.go", path: "/Projects/go-termflow/main.go", size: 1200, sizeLabel: "1.2 KB", modTime: DEMO_NOW, isDir: false },
-  { name: "app.go", path: "/Projects/go-termflow/app.go", size: 8400, sizeLabel: "8.4 KB", modTime: DEMO_NOW, isDir: false },
-  { name: "go.mod", path: "/Projects/go-termflow/go.mod", size: 612, sizeLabel: "612 B", modTime: DEMO_NOW, isDir: false },
+  { name: "frontend", path: "/Projects/go-termflow/frontend", size: 0, sizeLabel: "--", modTime: DEMO_NOW, owner: "delong", group: "staff", isDir: true },
+  { name: "internal", path: "/Projects/go-termflow/internal", size: 0, sizeLabel: "--", modTime: DEMO_NOW, owner: "delong", group: "staff", isDir: true },
+  { name: "main.go", path: "/Projects/go-termflow/main.go", size: 1200, sizeLabel: "1.2 KB", modTime: DEMO_NOW, owner: "delong", group: "staff", isDir: false },
+  { name: "app.go", path: "/Projects/go-termflow/app.go", size: 8400, sizeLabel: "8.4 KB", modTime: DEMO_NOW, owner: "delong", group: "staff", isDir: false },
+  { name: "go.mod", path: "/Projects/go-termflow/go.mod", size: 612, sizeLabel: "612 B", modTime: DEMO_NOW, owner: "delong", group: "staff", isDir: false },
 ];
 
 const DEMO_REMOTE_TREE: Record<string, BackendFileEntry[]> = {

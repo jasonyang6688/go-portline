@@ -25,6 +25,7 @@ type ContextMenuPoint = {
 
 interface TerminalFilesDockProps {
   files: BackendFileEntry[];
+  isLoading: boolean;
   path: string;
   hasSession: boolean;
   transfers: TransferRecord[];
@@ -93,6 +94,21 @@ function formatBytes(value: number | undefined): string {
   return `${current.toFixed(1)} PB`;
 }
 
+function formatFileDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString("zh-CN", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatOwnerGroup(entry: BackendFileEntry): string {
+  if (!entry.owner && !entry.group) {
+    return "";
+  }
+  return `${entry.owner || "-"}:${entry.group || "-"}`;
+}
+
 function contextMenuPoint(event: ReactMouseEvent): ContextMenuPoint {
   return {
     x: Math.min(event.clientX, window.innerWidth - 220),
@@ -110,6 +126,7 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
 
 export function TerminalFilesDock({
   files,
+  isLoading,
   path,
   hasSession,
   transfers,
@@ -138,6 +155,7 @@ export function TerminalFilesDock({
   const [selectionActive, setSelectionActive] = useState(false);
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   const selectedEntries = files.filter((file) => selectedSet.has(file.path));
+  const loadingLabel = "Loading remote files...";
 
   const openEntry = (entry: BackendFileEntry) => {
     if (entry.isDir) {
@@ -268,7 +286,8 @@ export function TerminalFilesDock({
 
   return (
     <aside
-      className="term-files"
+      aria-busy={isLoading}
+      className={`term-files${isLoading ? " is-loading" : ""}`}
       aria-label="Files panel"
       ref={dockRef}
       onPointerDownCapture={activateSelection}
@@ -278,25 +297,26 @@ export function TerminalFilesDock({
       <div className="tf-head">
         <span className="tf-head-title"><Icon name="files" size={13} />Files</span>
         <span className="tf-head-spacer" />
-        <button className="tf-sync" type="button" title="Sync with terminal path" onClick={onSync}><Icon name="link" size={12} />Sync</button>
-        <button className="tf-icon-btn" type="button" title="Refresh" onClick={onRefresh}><Icon name="refresh" size={13} /></button>
-        <button className="tf-icon-btn" type="button" title="Go up" onClick={() => onOpenPath(parentPath(path))}>↑</button>
-        <button className="tf-icon-btn" type="button" title="Upload local file" onClick={onUpload}><Icon name="upload" size={13} /></button>
-        <button className="tf-icon-btn" type="button" title="Upload local folder" onClick={onUploadFolder}><Icon name="files" size={13} /></button>
+        <button className="tf-sync" type="button" title="Sync with terminal path" onClick={onSync} disabled={isLoading}><Icon name="link" size={12} />Sync</button>
+        <button className="tf-icon-btn" type="button" title="Refresh" onClick={onRefresh} disabled={isLoading}><Icon name="refresh" size={13} /></button>
+        <button className="tf-icon-btn" type="button" title="Go up" onClick={() => onOpenPath(parentPath(path))} disabled={isLoading}>↑</button>
+        <button className="tf-icon-btn" type="button" title="Upload local file" onClick={onUpload} disabled={isLoading}><Icon name="upload" size={13} /></button>
+        <button className="tf-icon-btn" type="button" title="Upload local folder" onClick={onUploadFolder} disabled={isLoading}><Icon name="files" size={13} /></button>
         <button className="tf-icon-btn" type="button" title="Close panel" onClick={onClose}><Icon name="close" size={13} /></button>
       </div>
       <form className="tf-path-edit" onSubmit={handlePathSubmit}>
         <input
           aria-label="Remote path"
           name="terminal-remote-path"
+          disabled={isLoading}
           value={pathDraft}
           onChange={(event) => setPathDraft(event.target.value)}
         />
-        <button className="tf-go" type="submit">Go</button>
+        <button className="tf-go" type="submit" disabled={isLoading}>Go</button>
       </form>
       <div className="tf-path">
         {pathSegments(path).map((segment) => (
-          <button className="tf-path-seg" type="button" key={segment.path} onClick={() => onOpenPath(segment.path)}>
+          <button className="tf-path-seg" type="button" key={segment.path} onClick={() => onOpenPath(segment.path)} disabled={isLoading}>
             {segment.label}
           </button>
         ))}
@@ -308,7 +328,13 @@ export function TerminalFilesDock({
         onKeyDown={handleListKeyDown}
         onContextMenu={(event) => openMenu(event, null)}
       >
-        {files.length === 0 ? (
+        {isLoading ? (
+          <div className="tf-loading" role="status" aria-live="polite">
+            <span className="files-spinner" aria-hidden="true" />
+            <span>{loadingLabel}</span>
+          </div>
+        ) : null}
+        {files.length === 0 && !isLoading ? (
           <div className="tf-empty">
             {hasSession ? "No files found at this path." : "Open an SSH session to browse remote files."}
           </div>
@@ -327,7 +353,11 @@ export function TerminalFilesDock({
           >
             <span className="tf-row-icon">{file.isDir ? "🗂" : "📄"}</span>
             <span className="tf-row-name">{file.name}</span>
-            <span className="tf-row-size">{file.sizeLabel}</span>
+            <span className="tf-row-meta">
+              <span className="tf-row-size">{file.sizeLabel}</span>
+              <span className="tf-row-date">{formatFileDate(file.modTime)}</span>
+              <span className="tf-row-owner">{formatOwnerGroup(file)}</span>
+            </span>
             <span className="tf-actions">
               {file.isDir ? (
                 <button className="tf-act" type="button" title="Open folder" onClick={(event) => {
@@ -457,8 +487,8 @@ export function TerminalFilesDock({
       ) : null}
       <div className="tf-foot">
         <span>{selectedPaths.length > 0 ? `${selectedPaths.length}/${files.length} selected` : `${files.length} items`}</span>
-        <button className="tf-foot-up" type="button" onClick={onUpload}><Icon name="upload" size={11} />Upload</button>
-        <button className="tf-foot-up" type="button" onClick={onUploadFolder}><Icon name="files" size={11} />Folder</button>
+        <button className="tf-foot-up" type="button" onClick={onUpload} disabled={isLoading}><Icon name="upload" size={11} />Upload</button>
+        <button className="tf-foot-up" type="button" onClick={onUploadFolder} disabled={isLoading}><Icon name="files" size={11} />Folder</button>
       </div>
     </aside>
   );

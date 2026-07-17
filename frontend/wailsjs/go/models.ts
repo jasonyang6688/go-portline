@@ -1,5 +1,5 @@
 export namespace domain {
-
+	
 	export class AppSettings {
 	    theme: string;
 	    accent: string;
@@ -10,11 +10,11 @@ export namespace domain {
 	    sshAgent: boolean;
 	    defaultKeyPath: string;
 	    knownHostsPath: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AppSettings(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.theme = source["theme"];
@@ -32,11 +32,11 @@ export namespace domain {
 	    connectionId: string;
 	    sessionId: string;
 	    limit: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CommandHistoryFilter(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connectionId = source["connectionId"];
@@ -48,11 +48,11 @@ export namespace domain {
 	    sessionId: string;
 	    side: string;
 	    path: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileListInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -64,11 +64,11 @@ export namespace domain {
 	    sessionId: string;
 	    side: string;
 	    path: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileMutationInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -80,11 +80,11 @@ export namespace domain {
 	    sessionId: string;
 	    side: string;
 	    path: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileReadInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -97,11 +97,11 @@ export namespace domain {
 	    side: string;
 	    path: string;
 	    newPath: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileRenameInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -115,11 +115,11 @@ export namespace domain {
 	    side: string;
 	    path: string;
 	    content: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileSaveInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -136,11 +136,11 @@ export namespace domain {
 	    totalLabel: string;
 	    usedLabel: string;
 	    availableLabel: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileSystemMetric(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.filesystem = source["filesystem"];
@@ -158,11 +158,11 @@ export namespace domain {
 	    localPath: string;
 	    remotePath: string;
 	    overwrite: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileTransferInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -177,11 +177,11 @@ export namespace domain {
 	    localPath: string;
 	    remotePath: string;
 	    bytesTransferred: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FileTransferResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.direction = source["direction"];
@@ -194,11 +194,11 @@ export namespace domain {
 	    connectionId: string;
 	    sessionId: string;
 	    limit: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MonitorHistoryFilter(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connectionId = source["connectionId"];
@@ -212,11 +212,11 @@ export namespace domain {
 	    txBytes: number;
 	    rxLabel: string;
 	    txLabel: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new NetworkInterfaceMetric(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -229,11 +229,11 @@ export namespace domain {
 	export class TerminalSize {
 	    cols: number;
 	    rows: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TerminalSize(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cols = source["cols"];
@@ -245,11 +245,11 @@ export namespace domain {
 	    password: string;
 	    size: TerminalSize;
 	    insecureIgnoreHostKey: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new OpenSessionInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connectionId = source["connectionId"];
@@ -257,7 +257,7 @@ export namespace domain {
 	        this.size = this.convertValues(source["size"], TerminalSize);
 	        this.insecureIgnoreHostKey = source["insecureIgnoreHostKey"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -282,11 +282,11 @@ export namespace domain {
 	    cpuPercent: number;
 	    memory: string;
 	    memoryPercent: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProcessMetric(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -300,11 +300,11 @@ export namespace domain {
 	    sessionId: string;
 	    command: string;
 	    broadcast: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new RunCommandInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -324,11 +324,11 @@ export namespace domain {
 	    insecureIgnoreHostKey: boolean;
 	    group: string;
 	    tags: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SaveConnectionInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -351,11 +351,11 @@ export namespace domain {
 	    description: string;
 	    tags: string[];
 	    sortOrder: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SaveSavedCommandInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -366,7 +366,7 @@ export namespace domain {
 	        this.sortOrder = source["sortOrder"];
 	    }
 	}
-
+	
 	export class TestConnectionInput {
 	    connectionId: string;
 	    host: string;
@@ -376,11 +376,11 @@ export namespace domain {
 	    password: string;
 	    keyPath: string;
 	    insecureIgnoreHostKey: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TestConnectionInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connectionId = source["connectionId"];
@@ -397,7 +397,7 @@ export namespace domain {
 }
 
 export namespace main {
-
+	
 	export class APICommandHistoryEntry {
 	    id: string;
 	    sessionId: string;
@@ -405,11 +405,11 @@ export namespace main {
 	    connectionName: string;
 	    command: string;
 	    createdAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APICommandHistoryEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -434,11 +434,11 @@ export namespace main {
 	    tags: string[];
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APIConnection(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -464,11 +464,11 @@ export namespace main {
 	    size: number;
 	    modTime: string;
 	    isBinary: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APIFileContent(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -486,12 +486,14 @@ export namespace main {
 	    size: number;
 	    sizeLabel: string;
 	    modTime: string;
+	    owner: string;
+	    group: string;
 	    isDir: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APIFileEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -499,6 +501,8 @@ export namespace main {
 	        this.size = source["size"];
 	        this.sizeLabel = source["sizeLabel"];
 	        this.modTime = source["modTime"];
+	        this.owner = source["owner"];
+	        this.group = source["group"];
 	        this.isDir = source["isDir"];
 	    }
 	}
@@ -512,11 +516,11 @@ export namespace main {
 	    loadAverage: string;
 	    alertLevel: string;
 	    createdAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APIMonitorHistoryEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -548,11 +552,11 @@ export namespace main {
 	    filesystems: domain.FileSystemMetric[];
 	    networkInterfaces: domain.NetworkInterfaceMetric[];
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APIMonitorSnapshot(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionId = source["sessionId"];
@@ -573,7 +577,7 @@ export namespace main {
 	        this.networkInterfaces = this.convertValues(source["networkInterfaces"], domain.NetworkInterfaceMetric);
 	        this.updatedAt = source["updatedAt"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -601,11 +605,11 @@ export namespace main {
 	    sortOrder: number;
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APISavedCommand(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -625,11 +629,11 @@ export namespace main {
 	    status: string;
 	    createdAt: string;
 	    lastActiveAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new APISession(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];

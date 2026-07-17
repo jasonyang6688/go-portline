@@ -247,12 +247,15 @@ func (s *realSession) ListFiles(rawPath string) ([]domain.FileEntry, error) {
 
 	files := make([]domain.FileEntry, 0, len(entries))
 	for _, entry := range entries {
+		owner, group := remoteFileOwnerGroup(entry)
 		files = append(files, domain.FileEntry{
 			Name:      entry.Name(),
 			Path:      path.Join(cleanPath, entry.Name()),
 			Size:      entry.Size(),
 			SizeLabel: sizeLabel(entry.Size(), entry.IsDir()),
 			ModTime:   entry.ModTime().UTC(),
+			Owner:     owner,
+			Group:     group,
 			IsDir:     entry.IsDir(),
 		})
 	}
@@ -652,6 +655,14 @@ func sortFileEntries(files []domain.FileEntry) {
 		}
 		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
 	})
+}
+
+func remoteFileOwnerGroup(info os.FileInfo) (string, string) {
+	stat, ok := info.Sys().(*sftp.FileStat)
+	if !ok || stat == nil {
+		return "", ""
+	}
+	return strconv.FormatUint(uint64(stat.UID), 10), strconv.FormatUint(uint64(stat.GID), 10)
 }
 
 func sizeLabel(size int64, isDir bool) string {

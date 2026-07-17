@@ -524,12 +524,15 @@ func listLocalFiles(path string) ([]domain.FileEntry, error) {
 		if err != nil {
 			return nil, err
 		}
+		owner, group := fileOwnerGroup(info)
 		files = append(files, domain.FileEntry{
 			Name:      entry.Name(),
 			Path:      filepath.Join(cleanPath, entry.Name()),
 			Size:      info.Size(),
 			SizeLabel: sizeLabel(info.Size(), entry.IsDir()),
 			ModTime:   info.ModTime().UTC(),
+			Owner:     owner,
+			Group:     group,
 			IsDir:     entry.IsDir(),
 		})
 	}
