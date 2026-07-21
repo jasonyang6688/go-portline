@@ -341,6 +341,160 @@ func TestOpenWriteResizeCloseHappyPath(t *testing.T) {
 	}
 }
 
+func TestConnectedSessionOperationsDelegateToTerminal(t *testing.T) {
+	term := &fakeSession{
+		runOut: []byte("ok"),
+		files:  []domain.FileEntry{{Name: "app.log", Path: "/tmp/app.log"}},
+	}
+	reg := NewRegistry(&fakeRunner{session: term}, nil)
+	session, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c1",
+			Name:     "prod",
+			Host:     "127.0.0.1",
+			Port:     22,
+			Username: "root",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 90, Rows: 20},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if out, err := reg.Run(session.ID, "uptime"); err != nil || string(out) != "ok" {
+		t.Fatalf("Run() = %q, %v, want ok, nil", out, err)
+	}
+	if files, err := reg.ListFiles(session.ID, "/tmp"); err != nil || len(files) != 1 {
+		t.Fatalf("ListFiles() = %#v, %v, want one file", files, err)
+	}
+	if file, err := reg.ReadFile(session.ID, "/tmp/app.log"); err != nil || file.Content != "content" {
+		t.Fatalf("ReadFile() = %#v, %v, want content", file, err)
+	}
+	if err := reg.WriteFile(session.ID, "/tmp/app.log", "next"); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := reg.CreateFolder(session.ID, "/tmp/new"); err != nil {
+		t.Fatalf("CreateFolder() error = %v", err)
+	}
+	if err := reg.RenameFile(session.ID, "/tmp/old", "/tmp/new"); err != nil {
+		t.Fatalf("RenameFile() error = %v", err)
+	}
+	if err := reg.DeleteFile(session.ID, "/tmp/app.log"); err != nil {
+		t.Fatalf("DeleteFile() error = %v", err)
+	}
+	if _, err := reg.UploadFile(session.ID, "/local/app.log", "/tmp/app.log", true); err != nil {
+		t.Fatalf("UploadFile() error = %v", err)
+	}
+	if _, err := reg.DownloadFile(session.ID, "/tmp/app.log", "/local/app.log", true); err != nil {
+		t.Fatalf("DownloadFile() error = %v", err)
+	}
+	if len(term.runCommands) != 1 || term.runCommands[0] != "uptime" {
+		t.Fatalf("runCommands = %#v, want uptime", term.runCommands)
+	}
+}
+
+func TestDisconnectedSessionRejectsTerminalOperations(t *testing.T) {
+	term := &fakeSession{}
+	reg := NewRegistry(&fakeRunner{session: term}, nil)
+	session, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c1",
+			Name:     "prod",
+			Host:     "127.0.0.1",
+			Port:     22,
+			Username: "root",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 90, Rows: 20},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	term.emitExit(nil)
+
+	operations := map[string]func() error{
+		"resize": func() error {
+			return reg.Resize(session.ID, domain.TerminalSize{Cols: 100, Rows: 30})
+		},
+		"run": func() error {
+			_, err := reg.Run(session.ID, "uptime")
+			return err
+		},
+		"list files": func() error {
+			_, err := reg.ListFiles(session.ID, "/tmp")
+			return err
+		},
+		"read file": func() error {
+			_, err := reg.ReadFile(session.ID, "/tmp/app.log")
+			return err
+		},
+		"write file": func() error {
+			return reg.WriteFile(session.ID, "/tmp/app.log", "next")
+		},
+		"create folder": func() error {
+			return reg.CreateFolder(session.ID, "/tmp/new")
+		},
+		"rename file": func() error {
+			return reg.RenameFile(session.ID, "/tmp/old", "/tmp/new")
+		},
+		"delete file": func() error {
+			return reg.DeleteFile(session.ID, "/tmp/app.log")
+		},
+		"upload file": func() error {
+			_, err := reg.UploadFile(session.ID, "/local/app.log", "/tmp/app.log", true)
+			return err
+		},
+		"download file": func() error {
+			_, err := reg.DownloadFile(session.ID, "/tmp/app.log", "/local/app.log", true)
+			return err
+		},
+	}
+
+	for name, operation := range operations {
+		t.Run(name, func(t *testing.T) {
+			if err := operation(); !errors.Is(err, errSessionDisconnected) {
+				t.Fatalf("operation error = %v, want session disconnected", err)
+			}
+		})
+	}
+}
+
+func TestConnectedTerminalSnapshotRemainsSafeWhenSessionExits(t *testing.T) {
+	term := &fakeSession{}
+	reg := NewRegistry(&fakeRunner{session: term}, nil)
+	session, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c1",
+			Name:     "prod",
+			Host:     "127.0.0.1",
+			Port:     22,
+			Username: "root",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 90, Rows: 20},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	_, terminal, err := reg.connectedTerminal(session.ID)
+	if err != nil {
+		t.Fatalf("connectedTerminal() error = %v", err)
+	}
+	term.emitExit(nil)
+
+	if err := terminal.Write("pwd\r"); err != nil {
+		t.Fatalf("terminal snapshot Write() error = %v", err)
+	}
+	if term.closeCalls != 1 {
+		t.Fatalf("Close calls = %d, want 1", term.closeCalls)
+	}
+}
+
 func TestOpenConnectFailureDoesNotEmitOrphanSessionEvents(t *testing.T) {
 	emitter := &fakeEmitter{}
 	reg := NewRegistry(&fakeRunner{err: errors.New("dial failed")}, emitter)
@@ -427,7 +581,6 @@ func TestOpenReplaysBufferedOutputBeforeConcurrentLiveOutput(t *testing.T) {
 	if result.session.ID == "" {
 		t.Fatal("Open() session ID is empty")
 	}
-
 	select {
 	case <-liveDone:
 	case <-time.After(2 * time.Second):
@@ -535,8 +688,8 @@ func TestOpenDefersExitUntilStartupOutputReplayCompletes(t *testing.T) {
 	}
 
 	events := emitter.snapshot()
-	if len(events) != 6 {
-		t.Fatalf("events = %#v, want created + connected + two outputs + disconnected + closed", events)
+	if len(events) != 5 {
+		t.Fatalf("events = %#v, want created + connected + two outputs + disconnected", events)
 	}
 
 	wantNames := []string{
@@ -545,7 +698,6 @@ func TestOpenDefersExitUntilStartupOutputReplayCompletes(t *testing.T) {
 		domain.EventSessionOutput,
 		domain.EventSessionOutput,
 		domain.EventSessionStatus,
-		domain.EventSessionClosed,
 	}
 	for i, want := range wantNames {
 		if events[i].name != want {
@@ -564,6 +716,13 @@ func TestOpenDefersExitUntilStartupOutputReplayCompletes(t *testing.T) {
 	disconnected, ok := events[4].data.(domain.SessionStatusEvent)
 	if !ok || disconnected.Status != domain.SessionDisconnected {
 		t.Fatalf("event[4] = %#v, want disconnected status after buffered output", events[4])
+	}
+	snapshot, err := reg.Snapshot(result.session.ID)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.Status != domain.SessionDisconnected {
+		t.Fatalf("snapshot.Status = %q, want %q", snapshot.Status, domain.SessionDisconnected)
 	}
 }
 
@@ -606,7 +765,63 @@ func TestOpenStartFailureClosesAndRemovesSessionWithoutEmitting(t *testing.T) {
 	}
 }
 
-func TestExitCallbackRemovesSessionAndEmitsDisconnected(t *testing.T) {
+func TestExitCallbackMarksSessionDisconnectedWithoutClosingSession(t *testing.T) {
+	emitter := &fakeEmitter{}
+	term := &fakeSession{}
+	reg := NewRegistry(&fakeRunner{session: term}, emitter)
+
+	session, err := reg.Open(OpenRequest{
+		Connection: domain.Connection{
+			ID:       "c1",
+			Name:     "prod",
+			Host:     "127.0.0.1",
+			Port:     22,
+			Username: "root",
+			AuthType: domain.AuthPassword,
+		},
+		Password: "secret",
+		Size:     domain.TerminalSize{Cols: 90, Rows: 20},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	term.emitExit(errors.New("i/o timeout"))
+
+	snapshot, err := reg.Snapshot(session.ID)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.Status != domain.SessionDisconnected {
+		t.Fatalf("snapshot.Status = %q, want %q", snapshot.Status, domain.SessionDisconnected)
+	}
+	if err := reg.Write(session.ID, "pwd\r"); !errors.Is(err, errSessionDisconnected) {
+		t.Fatalf("Write() error = %v, want session disconnected", err)
+	}
+	if got := reg.Sessions(); len(got) != 0 {
+		t.Fatalf("Sessions() = %#v, want no connected sessions", got)
+	}
+
+	events := emitter.snapshot()
+	if len(events) != 3 {
+		t.Fatalf("events = %#v, want created + connected + disconnected", events)
+	}
+
+	disconnected, ok := events[2].data.(domain.SessionStatusEvent)
+	if events[2].name != domain.EventSessionStatus || !ok || disconnected.Status != domain.SessionDisconnected {
+		t.Fatalf("event[2] = %#v, want disconnected status", events[2])
+	}
+	if disconnected.Message != "i/o timeout" {
+		t.Fatalf("disconnected.Message = %q, want i/o timeout", disconnected.Message)
+	}
+	for i, event := range events {
+		if event.name == domain.EventSessionClosed {
+			t.Fatalf("event[%d] = %#v, unexpected closed event after disconnect", i, event)
+		}
+	}
+}
+
+func TestDisconnectedSessionCanBeClosedExplicitly(t *testing.T) {
 	emitter := &fakeEmitter{}
 	term := &fakeSession{}
 	reg := NewRegistry(&fakeRunner{session: term}, emitter)
@@ -628,26 +843,31 @@ func TestExitCallbackRemovesSessionAndEmitsDisconnected(t *testing.T) {
 	}
 
 	term.emitExit(nil)
+	term.emitExit(nil)
 
-	if _, err := reg.get(session.ID); !errors.Is(err, errSessionNotFound) {
-		t.Fatalf("get() error = %v, want session not found", err)
+	if err := reg.Close(session.ID); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
-	if err := reg.Write(session.ID, "pwd\r"); !errors.Is(err, errSessionNotFound) {
-		t.Fatalf("Write() error = %v, want session not found", err)
+	if _, err := reg.Snapshot(session.ID); !errors.Is(err, errSessionNotFound) {
+		t.Fatalf("Snapshot() error = %v, want session not found", err)
+	}
+	if term.closeCalls != 1 {
+		t.Fatalf("Close calls = %d, want 1", term.closeCalls)
 	}
 
 	events := emitter.snapshot()
-	if len(events) != 4 {
-		t.Fatalf("events = %#v, want created + connected + disconnected + closed", events)
+	if len(events) != 5 {
+		t.Fatalf("events = %#v, want created + connected + disconnected + closed status + closed", events)
 	}
-
-	disconnected, ok := events[2].data.(domain.SessionStatusEvent)
-	if events[2].name != domain.EventSessionStatus || !ok || disconnected.Status != domain.SessionDisconnected {
-		t.Fatalf("event[2] = %#v, want disconnected status", events[2])
+	if events[3].name != domain.EventSessionStatus {
+		t.Fatalf("event[3].name = %q, want %q", events[3].name, domain.EventSessionStatus)
 	}
-	closed, ok := events[3].data.(map[string]string)
-	if events[3].name != domain.EventSessionClosed || !ok || closed["sessionId"] != session.ID {
-		t.Fatalf("event[3] = %#v, want closed event", events[3])
+	closedStatus, ok := events[3].data.(domain.SessionStatusEvent)
+	if !ok || closedStatus.Status != domain.SessionClosed {
+		t.Fatalf("event[3] = %#v, want closed status", events[3])
+	}
+	if events[4].name != domain.EventSessionClosed {
+		t.Fatalf("event[4].name = %q, want %q", events[4].name, domain.EventSessionClosed)
 	}
 }
 

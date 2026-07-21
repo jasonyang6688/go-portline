@@ -186,7 +186,12 @@ const termflowCodeMirrorTheme = EditorView.theme(
     ".cm-content": {
       minHeight: "100%",
       padding: "12px 14px",
-      caretColor: "var(--accent)",
+      caretColor: "var(--yellow)",
+    },
+    ".cm-cursor, .cm-dropCursor": {
+      borderLeftColor: "var(--yellow) !important",
+      borderLeftWidth: "3px",
+      boxShadow: "0 0 0 1px rgba(24, 25, 38, 0.72), 0 0 10px rgba(238, 212, 159, 0.58)",
     },
     ".cm-line": {
       padding: "0 2px",

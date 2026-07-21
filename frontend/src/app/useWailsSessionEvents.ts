@@ -8,6 +8,7 @@ import type {
   SessionStatusEvent,
 } from "../features/connections/types";
 import {
+  SESSION_CREATED_EVENT,
   SESSION_CLOSED_EVENT,
   SESSION_ERROR_EVENT,
   SESSION_OUTPUT_EVENT,
@@ -22,6 +23,7 @@ import {
   shouldPreserveTerminalReplayContext,
 } from "./terminalReplay";
 import type { PendingCwdSync } from "./terminalViewTypes";
+import { addSessionIfMissing } from "./terminalSessions";
 
 type UseWailsSessionEventsOptions = {
   fullscreenTerminalSessionsRef: MutableRefObject<Record<string, boolean>>;
@@ -51,6 +53,15 @@ export function useWailsSessionEvents({
   }, [liveSessionIdsRef, sessions]);
 
   useEffect(() => {
+    const offCreated = onWailsEvent<Session>(SESSION_CREATED_EVENT, (session) => {
+      liveSessionIdsRef.current.add(session.id);
+      setSessions((current) => addSessionIfMissing(current, session));
+      setTerminalBuffers((current) => ({
+        ...current,
+        [session.id]: current[session.id] ?? "",
+      }));
+    });
+
     const offOutput = onWailsEvent<SessionOutputEvent>(SESSION_OUTPUT_EVENT, (event) => {
       if (!liveSessionIdsRef.current.has(event.sessionId)) {
         return;
@@ -138,6 +149,7 @@ export function useWailsSessionEvents({
         window.clearTimeout(pendingCwdSyncRef.current.timeoutId);
         pendingCwdSyncRef.current = null;
       }
+      offCreated();
       offOutput();
       offStatus();
       offError();

@@ -8,7 +8,7 @@ import {
 } from "../../app/terminalClipboard";
 import { shouldUseTerminalKeyboardFallback, terminalKeyDataFromKeyboardEvent } from "../../app/terminalKeyboard";
 import { resolveTerminalWrite } from "../../app/terminalReplay";
-import { reconcileTerminalSessions } from "../../app/terminalSessions";
+import { canInteractWithSession, reconcileTerminalSessions } from "../../app/terminalSessions";
 import { resizeTerminal, writeTerminal } from "../../shared/api/wails";
 import type { Session, TerminalSize } from "../connections/types";
 
@@ -107,6 +107,7 @@ export function TerminalPane({
   const hostRefs = useRef(new Map<string, HTMLDivElement>());
   const terminalEntriesRef = useRef(new Map<string, TerminalEntry>());
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  const sessionStatusesRef = useRef(new Map(sessions.map((session) => [session.id, session.status])));
   const sizeChangeRef = useRef<Props["onTerminalSizeChange"]>(onTerminalSizeChange);
   const fullscreenChangeRef = useRef<Props["onFullscreenChange"]>(onFullscreenChange);
   const commandCommitRef = useRef<Props["onCommandCommit"]>(onCommandCommit);
@@ -169,7 +170,28 @@ export function TerminalPane({
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  useEffect(() => {
+    sessionStatusesRef.current = new Map(sessions.map((session) => [session.id, session.status]));
+    for (const session of sessions) {
+      const entry = terminalEntriesRef.current.get(session.id);
+      if (entry) {
+        const interactive = canInteractWithSession(session);
+        entry.terminal.options.disableStdin = !interactive;
+        if (!interactive && entry.terminal.buffer.active.type === "alternate") {
+          entry.terminal.write("\u001b[?1049l");
+        }
+        if (!interactive && entry.fullscreen) {
+          entry.fullscreen = false;
+          fullscreenChangeRef.current?.(session.id, false);
+        }
+      }
+    }
+  }, [sessions]);
+
   const writeToSession = useCallback((sessionId: string, data: string) => {
+    if (sessionStatusesRef.current.get(sessionId) !== "connected") {
+      return;
+    }
     try {
       void writeTerminal(sessionId, data).catch(() => {});
     } catch {
@@ -218,6 +240,9 @@ export function TerminalPane({
     }
     entry.lastSentSize = size;
     sizeChangeRef.current?.(size);
+    if (sessionStatusesRef.current.get(sessionId) !== "connected") {
+      return;
+    }
     try {
       void resizeTerminal(sessionId, size).catch(() => {});
     } catch {
@@ -255,6 +280,7 @@ export function TerminalPane({
       fontSize: 13,
       lineHeight: 1.65,
       minimumContrastRatio: MINIMUM_TERMINAL_CONTRAST_RATIO,
+      disableStdin: !canInteractWithSession(session),
       theme: themeMode === "light" ? LIGHT_TERMINAL_THEME : DARK_TERMINAL_THEME,
     });
     const fitAddon = new FitAddon();
@@ -278,6 +304,10 @@ export function TerminalPane({
     };
 
     const syncFullscreenState = () => {
+      if (sessionStatusesRef.current.get(session.id) !== "connected" && entry.terminal.buffer.active.type === "alternate") {
+        entry.terminal.write("\u001b[?1049l");
+        return;
+      }
       const fullscreen = entry.terminal.buffer.active.type === "alternate";
       if (entry.fullscreen === fullscreen) {
         return;
@@ -288,6 +318,9 @@ export function TerminalPane({
     };
 
     entry.inputDisposable = terminal.onData((data) => {
+      if (sessionStatusesRef.current.get(session.id) !== "connected") {
+        return;
+      }
       if (!entry.fullscreen && !data.startsWith("\u001b")) {
         for (const char of data) {
           if (char === "\r" || char === "\n") {

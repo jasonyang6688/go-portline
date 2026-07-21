@@ -19,6 +19,7 @@ import {
   DEMO_NOW,
 } from "./appDemoData";
 import { sortConnections } from "./appHelpers";
+import { addSessionIfMissing, openedSessionStatusMessage } from "./terminalSessions";
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -159,7 +160,7 @@ export function useConnectionActions({
         createdAt: new Date().toISOString(),
         lastActiveAt: new Date().toISOString(),
       };
-      setSessions((current) => [...current, session]);
+      setSessions((current) => addSessionIfMissing(current, session));
       setTerminalBuffers((current) => ({
         ...current,
         [session.id]: DEMO_BUFFERS["demo-prod"].split("prod-01").join(connection.name),
@@ -180,10 +181,10 @@ export function useConnectionActions({
 
       setTerminalBuffers((current) => ({ ...current, [session.id]: current[session.id] ?? "" }));
       liveSessionIdsRef.current = new Set([...liveSessionIdsRef.current, session.id]);
-      setSessions((current) => [...current, session]);
+      setSessions((current) => addSessionIfMissing(current, session));
       setActiveSessionId(session.id);
       setBackendAvailable(true);
-      setStatus(`Connected to ${connection.name}`);
+      setStatus(openedSessionStatusMessage(connection.name, session.status));
     } catch (error) {
       if (isBackendUnavailable(error)) {
         setBackendAvailable(false);

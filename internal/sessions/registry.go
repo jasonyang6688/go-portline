@@ -11,7 +11,10 @@ import (
 	"termflow/internal/sshclient"
 )
 
-var errSessionNotFound = errors.New("session not found")
+var (
+	errSessionNotFound     = errors.New("session not found")
+	errSessionDisconnected = errors.New("session is disconnected")
+)
 
 type Emitter interface {
 	Emit(name string, data any)
@@ -154,103 +157,106 @@ func (r *Registry) Open(req OpenRequest) (domain.Session, error) {
 
 	if exited {
 		r.onExit(id, exitErr)
+		return r.Snapshot(id)
 	}
 
 	return model, nil
 }
 
 func (r *Registry) Write(sessionID string, data string) error {
-	ent, err := r.get(sessionID)
+	ent, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return err
 	}
-	if err := ent.term.Write(data); err != nil {
+	if err := term.Write(data); err != nil {
 		return err
 	}
 	ent.mu.Lock()
-	ent.model.LastActiveAt = time.Now().UTC()
+	model := ent.model
+	model.LastActiveAt = time.Now().UTC()
+	ent.model = model
 	ent.mu.Unlock()
 	return nil
 }
 
 func (r *Registry) Resize(sessionID string, size domain.TerminalSize) error {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return err
 	}
-	return ent.term.Resize(size)
+	return term.Resize(size)
 }
 
 func (r *Registry) Run(sessionID string, command string) ([]byte, error) {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return ent.term.Run(command)
+	return term.Run(command)
 }
 
 func (r *Registry) ListFiles(sessionID string, path string) ([]domain.FileEntry, error) {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return ent.term.ListFiles(path)
+	return term.ListFiles(path)
 }
 
 func (r *Registry) ReadFile(sessionID string, path string) (domain.FileContent, error) {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return domain.FileContent{}, err
 	}
-	return ent.term.ReadFile(path)
+	return term.ReadFile(path)
 }
 
 func (r *Registry) WriteFile(sessionID string, path string, content string) error {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return err
 	}
-	return ent.term.WriteFile(path, content)
+	return term.WriteFile(path, content)
 }
 
 func (r *Registry) CreateFolder(sessionID string, path string) error {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return err
 	}
-	return ent.term.CreateFolder(path)
+	return term.CreateFolder(path)
 }
 
 func (r *Registry) RenameFile(sessionID string, path string, newPath string) error {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return err
 	}
-	return ent.term.RenameFile(path, newPath)
+	return term.RenameFile(path, newPath)
 }
 
 func (r *Registry) DeleteFile(sessionID string, path string) error {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return err
 	}
-	return ent.term.DeleteFile(path)
+	return term.DeleteFile(path)
 }
 
 func (r *Registry) UploadFile(sessionID string, localPath string, remotePath string, overwrite bool) (int64, error) {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return 0, err
 	}
-	return ent.term.UploadFile(localPath, remotePath, overwrite)
+	return term.UploadFile(localPath, remotePath, overwrite)
 }
 
 func (r *Registry) DownloadFile(sessionID string, remotePath string, localPath string, overwrite bool) (int64, error) {
-	ent, err := r.get(sessionID)
+	_, term, err := r.connectedTerminal(sessionID)
 	if err != nil {
 		return 0, err
 	}
-	return ent.term.DownloadFile(remotePath, localPath, overwrite)
+	return term.DownloadFile(remotePath, localPath, overwrite)
 }
 
 func (r *Registry) Snapshot(sessionID string) (domain.Session, error) {
@@ -274,7 +280,9 @@ func (r *Registry) Sessions() []domain.Session {
 	out := make([]domain.Session, 0, len(entries))
 	for _, ent := range entries {
 		ent.mu.Lock()
-		out = append(out, ent.model)
+		if ent.model.Status == domain.SessionConnected {
+			out = append(out, ent.model)
+		}
 		ent.mu.Unlock()
 	}
 	return out
@@ -286,7 +294,18 @@ func (r *Registry) Close(sessionID string) error {
 		return err
 	}
 
-	closeErr := ent.term.Close()
+	var closeErr error
+	ent.mu.Lock()
+	model := ent.model
+	model.Status = domain.SessionClosed
+	model.LastActiveAt = time.Now().UTC()
+	ent.model = model
+	term := ent.term
+	ent.term = nil
+	ent.mu.Unlock()
+	if term != nil {
+		closeErr = term.Close()
+	}
 	r.emit(domain.EventSessionStatus, domain.SessionStatusEvent{
 		SessionID: sessionID,
 		Status:    domain.SessionClosed,
@@ -311,8 +330,25 @@ func (r *Registry) CloseAll() {
 }
 
 func (r *Registry) onExit(sessionID string, exitErr error) {
-	if _, err := r.remove(sessionID); err != nil {
+	ent, err := r.get(sessionID)
+	if err != nil {
 		return
+	}
+
+	ent.mu.Lock()
+	if ent.model.Status == domain.SessionDisconnected || ent.model.Status == domain.SessionClosed {
+		ent.mu.Unlock()
+		return
+	}
+	model := ent.model
+	model.Status = domain.SessionDisconnected
+	model.LastActiveAt = time.Now().UTC()
+	ent.model = model
+	term := ent.term
+	ent.term = nil
+	ent.mu.Unlock()
+	if term != nil {
+		_ = term.Close()
 	}
 
 	message := "disconnected"
@@ -325,7 +361,6 @@ func (r *Registry) onExit(sessionID string, exitErr error) {
 		Status:    domain.SessionDisconnected,
 		Message:   message,
 	})
-	r.emit(domain.EventSessionClosed, map[string]string{"sessionId": sessionID})
 }
 
 func (r *Registry) get(sessionID string) (*entry, error) {
@@ -337,6 +372,20 @@ func (r *Registry) get(sessionID string) (*entry, error) {
 		return nil, errSessionNotFound
 	}
 	return ent, nil
+}
+
+func (r *Registry) connectedTerminal(sessionID string) (*entry, sshclient.TerminalSession, error) {
+	ent, err := r.get(sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ent.mu.Lock()
+	defer ent.mu.Unlock()
+	if ent.model.Status != domain.SessionConnected || ent.term == nil {
+		return nil, nil, errSessionDisconnected
+	}
+	return ent, ent.term, nil
 }
 
 func (r *Registry) remove(sessionID string) (*entry, error) {

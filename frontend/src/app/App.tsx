@@ -22,6 +22,7 @@ import type {
 } from "../features/connections/types";
 import { CWD_SYNC_COMMAND } from "./cwdSyncOutput";
 import { canWriteShellCommand } from "./terminalReplay";
+import { canInteractWithSession } from "./terminalSessions";
 import { commandScopeKey } from "./terminalSmartBarCommands";
 import { TitleBar } from "./TitleBar";
 import type { CommandHistoryScope } from "./TerminalHistoryDock";
@@ -428,6 +429,10 @@ export default function App() {
     if (!activeSession) {
       setStatus("No active session");
       setRemoteFiles([]);
+      return;
+    }
+    if (!canInteractWithSession(activeSession)) {
+      setStatus(`Session ${activeSession.status}: ${activeSession.name}`);
       return;
     }
     if (!backendAvailable) {

@@ -65,3 +65,28 @@ test("creates missing terminal sessions and disposes closed sessions", () => {
     },
   );
 });
+
+test("adds a created session once and preserves newer event state", () => {
+  const { addSessionIfMissing } = loadModule("terminalSessions.ts");
+  const created = { id: "s1", status: "connected" };
+  const disconnected = { id: "s1", status: "disconnected" };
+
+  assert.deepEqual(plain(addSessionIfMissing([], created)), [created]);
+  assert.deepEqual(plain(addSessionIfMissing([disconnected], created)), [disconnected]);
+});
+
+test("allows terminal interaction only for connected sessions", () => {
+  const { canInteractWithSession } = loadModule("terminalSessions.ts");
+
+  assert.equal(canInteractWithSession({ status: "connected" }), true);
+  assert.equal(canInteractWithSession({ status: "disconnected" }), false);
+  assert.equal(canInteractWithSession({ status: "closed" }), false);
+  assert.equal(canInteractWithSession(null), false);
+});
+
+test("reports the actual status when an opened session already disconnected", () => {
+  const { openedSessionStatusMessage } = loadModule("terminalSessions.ts");
+
+  assert.equal(openedSessionStatusMessage("prod-01", "connected"), "Connected to prod-01");
+  assert.equal(openedSessionStatusMessage("prod-01", "disconnected"), "Session disconnected: prod-01");
+});

@@ -16,6 +16,7 @@ import {
   canWriteShellCommand,
 } from "./terminalReplay";
 import type { CommandHistoryScope } from "./TerminalHistoryDock";
+import { canInteractWithSession } from "./terminalSessions";
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -124,6 +125,10 @@ export function useTerminalActions({
       setStatus("No active session");
       return;
     }
+    if (!canInteractWithSession(activeSession)) {
+      setStatus(`Session ${activeSession.status}: ${activeSession.name}`);
+      return;
+    }
     if (!canWriteShellCommand(activeSession.id, fullscreenTerminalSessionsRef.current)) {
       setStatus("Exit the fullscreen terminal app before running shell commands");
       return;
@@ -164,7 +169,7 @@ export function useTerminalActions({
   }
 
   async function handleTerminalCommandCommit(command: string) {
-    if (!activeSession || !backendAvailable) {
+    if (!activeSession || !backendAvailable || !canInteractWithSession(activeSession)) {
       return;
     }
     try {
