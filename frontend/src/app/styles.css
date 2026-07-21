@@ -1033,6 +1033,28 @@ button {
   font-size: 17px;
 }
 
+.tt-vital.power.reconnect {
+  color: var(--green);
+  background: rgba(64, 160, 43, 0.08);
+  border-color: rgba(64, 160, 43, 0.28);
+  box-shadow: 0 0 0 4px rgba(64, 160, 43, 0.05);
+}
+
+.tt-vital.power.reconnect[aria-busy="true"] svg {
+  animation: reconnectSpin 0.9s linear infinite;
+}
+
+.tt-vital.power:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+@keyframes reconnectSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .tt-spark {
   display: inline-flex;
   align-items: end;

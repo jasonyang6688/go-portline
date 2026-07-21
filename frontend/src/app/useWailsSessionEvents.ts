@@ -22,15 +22,23 @@ import {
   appendTerminalData,
   shouldPreserveTerminalReplayContext,
 } from "./terminalReplay";
-import type { PendingCwdSync } from "./terminalViewTypes";
-import { addSessionIfMissing } from "./terminalSessions";
+import type {
+  PendingCwdSync,
+  SessionReconnectAttempt,
+  SessionReconnectInputStore,
+} from "./terminalViewTypes";
+import { addSessionIfMissing, shouldStageReconnectedSession } from "./terminalSessions";
 
 type UseWailsSessionEventsOptions = {
   fullscreenTerminalSessionsRef: MutableRefObject<Record<string, boolean>>;
   liveSessionIdsRef: MutableRefObject<Set<string>>;
   pendingCwdSyncRef: MutableRefObject<PendingCwdSync | null>;
+  reconnectAttemptRef: MutableRefObject<SessionReconnectAttempt | null>;
+  reconnectingConnectionIdRef: MutableRefObject<string | null>;
+  reconnectInputsRef: MutableRefObject<SessionReconnectInputStore>;
   refreshRemoteFilesRef: MutableRefObject<(path?: string) => Promise<void>>;
   sessions: Session[];
+  stagedReconnectSessionsRef: MutableRefObject<Map<string, Session>>;
   setFullscreenTerminalSessions: Dispatch<SetStateAction<Record<string, boolean>>>;
   setSessions: Dispatch<SetStateAction<Session[]>>;
   setStatus: (status: string) => void;
@@ -41,21 +49,35 @@ export function useWailsSessionEvents({
   fullscreenTerminalSessionsRef,
   liveSessionIdsRef,
   pendingCwdSyncRef,
+  reconnectAttemptRef,
+  reconnectingConnectionIdRef,
+  reconnectInputsRef,
   refreshRemoteFilesRef,
   sessions,
+  stagedReconnectSessionsRef,
   setFullscreenTerminalSessions,
   setSessions,
   setStatus,
   setTerminalBuffers,
 }: UseWailsSessionEventsOptions) {
   useEffect(() => {
-    liveSessionIdsRef.current = new Set(sessions.map((session) => session.id));
-  }, [liveSessionIdsRef, sessions]);
+    const nextSessionIds = new Set(sessions.map((session) => session.id));
+    if (reconnectingConnectionIdRef.current) {
+      for (const sessionId of liveSessionIdsRef.current) {
+        nextSessionIds.add(sessionId);
+      }
+    }
+    liveSessionIdsRef.current = nextSessionIds;
+  }, [liveSessionIdsRef, reconnectingConnectionIdRef, sessions]);
 
   useEffect(() => {
     const offCreated = onWailsEvent<Session>(SESSION_CREATED_EVENT, (session) => {
       liveSessionIdsRef.current.add(session.id);
-      setSessions((current) => addSessionIfMissing(current, session));
+      if (shouldStageReconnectedSession(reconnectingConnectionIdRef.current, session)) {
+        stagedReconnectSessionsRef.current.set(session.id, session);
+      } else {
+        setSessions((current) => addSessionIfMissing(current, session));
+      }
       setTerminalBuffers((current) => ({
         ...current,
         [session.id]: current[session.id] ?? "",
@@ -103,10 +125,19 @@ export function useWailsSessionEvents({
       if (!liveSessionIdsRef.current.has(event.sessionId)) {
         return;
       }
+      const lastActiveAt = new Date().toISOString();
+      const stagedSession = stagedReconnectSessionsRef.current.get(event.sessionId);
+      if (stagedSession) {
+        stagedReconnectSessionsRef.current.set(event.sessionId, {
+          ...stagedSession,
+          status: event.status,
+          lastActiveAt,
+        });
+      }
       setSessions((current) =>
         current.map((session) =>
           session.id === event.sessionId
-            ? { ...session, status: event.status, lastActiveAt: new Date().toISOString() }
+            ? { ...session, status: event.status, lastActiveAt }
             : session,
         ),
       );
@@ -125,7 +156,12 @@ export function useWailsSessionEvents({
     });
 
     const offClosed = onWailsEvent<SessionClosedEvent>(SESSION_CLOSED_EVENT, (event) => {
-      liveSessionIdsRef.current.delete(event.sessionId);
+      const wasRegistered = liveSessionIdsRef.current.delete(event.sessionId);
+      if (reconnectAttemptRef.current?.sessionId === event.sessionId) {
+        reconnectAttemptRef.current = null;
+      }
+      reconnectInputsRef.current.delete(event.sessionId);
+      stagedReconnectSessionsRef.current.delete(event.sessionId);
       if (pendingCwdSyncRef.current?.sessionId === event.sessionId) {
         window.clearTimeout(pendingCwdSyncRef.current.timeoutId);
         pendingCwdSyncRef.current = null;
@@ -141,7 +177,9 @@ export function useWailsSessionEvents({
         delete next[event.sessionId];
         return next;
       });
-      setStatus(`Session closed: ${event.sessionId}`);
+      if (wasRegistered) {
+        setStatus(`Session closed: ${event.sessionId}`);
+      }
     });
 
     return () => {
@@ -159,10 +197,14 @@ export function useWailsSessionEvents({
     fullscreenTerminalSessionsRef,
     liveSessionIdsRef,
     pendingCwdSyncRef,
+    reconnectAttemptRef,
+    reconnectingConnectionIdRef,
+    reconnectInputsRef,
     refreshRemoteFilesRef,
     setFullscreenTerminalSessions,
     setSessions,
     setStatus,
     setTerminalBuffers,
+    stagedReconnectSessionsRef,
   ]);
 }

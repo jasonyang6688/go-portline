@@ -33,6 +33,7 @@ type TerminalViewProps = {
   remoteFiles: BackendFileEntry[];
   remoteFilesLoading: boolean;
   remotePath: string;
+  reconnectingActiveSession: boolean;
   savedCommands: SavedCommand[];
   sessions: Session[];
   terminalBroadcast: boolean;
@@ -58,6 +59,7 @@ type TerminalViewProps = {
   onClearActiveHistory: () => void;
   onClearFinishedTransfers: () => void;
   onCloseActiveSession: () => void;
+  onReconnectActiveSession: () => void;
   onCloseDock: () => void;
   onCloseSmartBar: () => void;
   onCommandCommit: (command: string) => void;
@@ -102,6 +104,7 @@ export function TerminalView({
   remoteFiles,
   remoteFilesLoading,
   remotePath,
+  reconnectingActiveSession,
   savedCommands,
   sessions,
   terminalBroadcast,
@@ -127,6 +130,7 @@ export function TerminalView({
   onClearActiveHistory,
   onClearFinishedTransfers,
   onCloseActiveSession,
+  onReconnectActiveSession,
   onCloseDock,
   onCloseSmartBar,
   onCommandCommit,
@@ -167,7 +171,10 @@ export function TerminalView({
         terminalMemory={terminalMemory}
         terminalCPUHistory={terminalCPUHistory}
         terminalCPUHistoryMax={terminalCPUHistoryMax}
+        activeSessionStatus={activeSession?.status ?? null}
+        reconnecting={reconnectingActiveSession}
         onCloseActiveSession={onCloseActiveSession}
+        onReconnectActiveSession={onReconnectActiveSession}
         onToggleMonitorDock={onToggleMonitorDock}
         onToggleFilesDock={onToggleFilesDock}
         onToggleHistoryDock={onToggleHistoryDock}

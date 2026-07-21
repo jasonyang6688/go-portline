@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type {
   Connection,
@@ -19,7 +19,15 @@ import {
   DEMO_NOW,
 } from "./appDemoData";
 import { sortConnections } from "./appHelpers";
-import { addSessionIfMissing, openedSessionStatusMessage } from "./terminalSessions";
+import {
+  addSessionIfMissing,
+  latestReconnectedSession,
+  openedSessionStatusMessage,
+  rekeyReconnectedTerminalBuffer,
+  replaceReconnectedSession,
+  terminalSessionPrimaryAction,
+} from "./terminalSessions";
+import type { SessionReconnectAttempt, SessionReconnectInputStore } from "./terminalViewTypes";
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -68,7 +76,12 @@ export function useConnectionActions({
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
   const [pendingDeleteConnection, setPendingDeleteConnection] = useState<Connection | null>(null);
   const [deletingConnectionId, setDeletingConnectionId] = useState<string | null>(null);
+  const [reconnectingSessionId, setReconnectingSessionId] = useState<string | null>(null);
   const [tabConnectionMenuOpen, setTabConnectionMenuOpen] = useState(false);
+  const reconnectInputsRef = useRef<SessionReconnectInputStore>(new Map());
+  const reconnectAttemptRef = useRef<SessionReconnectAttempt | null>(null);
+  const reconnectingConnectionIdRef = useRef<string | null>(null);
+  const stagedReconnectSessionsRef = useRef(new Map<string, Session>());
 
   async function refreshConnectionsFromBackend() {
     if (!backendAvailable) {
@@ -179,6 +192,7 @@ export function useConnectionActions({
         insecureIgnoreHostKey,
       });
 
+      reconnectInputsRef.current.set(session.id, { password, insecureIgnoreHostKey });
       setTerminalBuffers((current) => ({ ...current, [session.id]: current[session.id] ?? "" }));
       liveSessionIdsRef.current = new Set([...liveSessionIdsRef.current, session.id]);
       setSessions((current) => addSessionIfMissing(current, session));
@@ -232,6 +246,117 @@ export function useConnectionActions({
     }
   }
 
+  async function handleReconnectSession(previousSession: Session) {
+    if (
+      reconnectingConnectionIdRef.current
+      || terminalSessionPrimaryAction(previousSession.status, false) !== "reconnect"
+    ) {
+      return;
+    }
+    const connection = connections.find((item) => item.id === previousSession.connectionId);
+    if (!connection) {
+      setStatus(`Connection settings not found: ${previousSession.name}`);
+      return;
+    }
+
+    setReconnectingSessionId(previousSession.id);
+    const reconnectAttempt = {
+      sessionId: previousSession.id,
+      connectionId: connection.id,
+    };
+    reconnectAttemptRef.current = reconnectAttempt;
+    reconnectingConnectionIdRef.current = connection.id;
+    setStatus(`Reconnecting to ${connection.name}`);
+    try {
+      if (!backendAvailable) {
+        const now = new Date().toISOString();
+        const replacement: Session = {
+          ...previousSession,
+          id: `demo-${connection.id}-${Date.now()}`,
+          status: "connected",
+          createdAt: now,
+          lastActiveAt: now,
+        };
+        setSessions((current) => replaceReconnectedSession(current, previousSession.id, replacement));
+        setTerminalBuffers((current) =>
+          rekeyReconnectedTerminalBuffer(current, previousSession.id, replacement.id),
+        );
+        liveSessionIdsRef.current = new Set(
+          [...liveSessionIdsRef.current].filter((sessionId) => sessionId !== previousSession.id),
+        );
+        liveSessionIdsRef.current.add(replacement.id);
+        setFullscreenTerminalSessions((current) => {
+          const next = { ...current };
+          delete next[previousSession.id];
+          delete next[replacement.id];
+          return next;
+        });
+        setActiveSessionId(replacement.id);
+        setActiveView("terminal");
+        setStatus(`Reconnected preview session: ${connection.name}`);
+        return;
+      }
+
+      const returnedReplacement = await openSession({
+        connectionId: connection.id,
+        password: reconnectInputsRef.current.get(previousSession.id)?.password || connection.password,
+        size: terminalSize,
+        insecureIgnoreHostKey:
+          reconnectInputsRef.current.get(previousSession.id)?.insecureIgnoreHostKey || connection.insecureIgnoreHostKey,
+      });
+      if (reconnectAttemptRef.current !== reconnectAttempt) {
+        stagedReconnectSessionsRef.current.delete(returnedReplacement.id);
+        reconnectInputsRef.current.delete(returnedReplacement.id);
+        liveSessionIdsRef.current.delete(returnedReplacement.id);
+        setTerminalBuffers((current) => {
+          const next = { ...current };
+          delete next[returnedReplacement.id];
+          return next;
+        });
+        void closeSession(returnedReplacement.id).catch(() => undefined);
+        return;
+      }
+      const replacement = latestReconnectedSession(stagedReconnectSessionsRef.current, returnedReplacement);
+      stagedReconnectSessionsRef.current.delete(replacement.id);
+
+      const reconnectInput = reconnectInputsRef.current.get(previousSession.id) ?? {
+        password: connection.password,
+        insecureIgnoreHostKey: connection.insecureIgnoreHostKey,
+      };
+      reconnectInputsRef.current.delete(previousSession.id);
+      reconnectInputsRef.current.set(replacement.id, reconnectInput);
+      liveSessionIdsRef.current = new Set(
+        [...liveSessionIdsRef.current].filter((sessionId) => sessionId !== previousSession.id),
+      );
+      liveSessionIdsRef.current.add(replacement.id);
+      setSessions((current) => replaceReconnectedSession(current, previousSession.id, replacement));
+      setTerminalBuffers((current) =>
+        rekeyReconnectedTerminalBuffer(current, previousSession.id, replacement.id),
+      );
+      setFullscreenTerminalSessions((current) => {
+        const next = { ...current };
+        delete next[previousSession.id];
+        delete next[replacement.id];
+        return next;
+      });
+      setActiveSessionId(replacement.id);
+      setActiveView("terminal");
+      setBackendAvailable(true);
+      setStatus(openedSessionStatusMessage(connection.name, replacement.status));
+      void closeSession(previousSession.id).catch(() => undefined);
+    } catch (error) {
+      setStatus(`Reconnect failed: ${messageFromError(error)}`);
+    } finally {
+      if (reconnectAttemptRef.current === reconnectAttempt) {
+        reconnectAttemptRef.current = null;
+      }
+      if (reconnectingConnectionIdRef.current === connection.id) {
+        reconnectingConnectionIdRef.current = null;
+      }
+      setReconnectingSessionId((current) => (current === previousSession.id ? null : current));
+    }
+  }
+
   async function confirmDeleteConnection(connection: Connection) {
     const removeConnection = () => {
       const removedSessionIds = new Set(
@@ -239,6 +364,13 @@ export function useConnectionActions({
           .filter((session) => session.connectionId === connection.id)
           .map((session) => session.id),
       );
+      for (const sessionID of removedSessionIds) {
+        reconnectInputsRef.current.delete(sessionID);
+        stagedReconnectSessionsRef.current.delete(sessionID);
+      }
+      if (reconnectAttemptRef.current?.connectionId === connection.id) {
+        reconnectAttemptRef.current = null;
+      }
       setConnections((current) => current.filter((item) => item.id !== connection.id));
       setSessions((current) => current.filter((session) => session.connectionId !== connection.id));
       setTerminalBuffers((current) =>
@@ -311,11 +443,17 @@ export function useConnectionActions({
     editingConnection,
     isModalOpen,
     pendingDeleteConnection,
+    reconnectingConnectionIdRef,
+    reconnectAttemptRef,
+    reconnectInputsRef,
+    reconnectingSessionId,
+    stagedReconnectSessionsRef,
     tabConnectionMenuOpen,
     confirmDeleteConnection,
     handleCreateConnectionFromTabs,
     handleOpenConnection,
     handleOpenConnectionFromTabs,
+    handleReconnectSession,
     handleSaveConnection,
     handleTrustHostKeyAndOpen,
     refreshConnectionsFromBackend,

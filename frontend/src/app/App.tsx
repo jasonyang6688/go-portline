@@ -241,11 +241,17 @@ export default function App() {
     editingConnection,
     isModalOpen,
     pendingDeleteConnection,
+    reconnectAttemptRef,
+    reconnectingConnectionIdRef,
+    reconnectInputsRef,
+    reconnectingSessionId,
+    stagedReconnectSessionsRef,
     tabConnectionMenuOpen,
     confirmDeleteConnection,
     handleCreateConnectionFromTabs,
     handleOpenConnection,
     handleOpenConnectionFromTabs,
+    handleReconnectSession,
     handleSaveConnection,
     handleTrustHostKeyAndOpen,
     refreshConnectionsFromBackend,
@@ -273,8 +279,12 @@ export default function App() {
     fullscreenTerminalSessionsRef,
     liveSessionIdsRef,
     pendingCwdSyncRef,
+    reconnectAttemptRef,
+    reconnectingConnectionIdRef,
+    reconnectInputsRef,
     refreshRemoteFilesRef,
     sessions,
+    stagedReconnectSessionsRef,
     setFullscreenTerminalSessions,
     setSessions,
     setStatus,
@@ -331,6 +341,8 @@ export default function App() {
     terminalDisplayPath,
     terminalDisplayUser,
     refreshCommandHistory,
+    reconnectAttemptRef,
+    reconnectInputsRef,
     setActiveSessionId,
     setCommandHistory,
     setFullscreenTerminalSessions,
@@ -637,6 +649,7 @@ export default function App() {
               remoteFiles={remoteFiles}
               remoteFilesLoading={fileListLoading.remote}
               remotePath={remotePath}
+              reconnectingActiveSession={activeSession?.id === reconnectingSessionId}
               savedCommands={savedCommands}
               sessions={sessions}
               terminalBroadcast={terminalBroadcast}
@@ -665,6 +678,7 @@ export default function App() {
               onClearActiveHistory={() => void handleClearActiveHistory()}
               onClearFinishedTransfers={clearFinishedTransfers}
               onCloseActiveSession={() => activeSession && handleCloseSession(activeSession.id)}
+              onReconnectActiveSession={() => activeSession && void handleReconnectSession(activeSession)}
               onCloseDock={() => setTerminalDock(null)}
               onCloseSmartBar={() => setTerminalSmartOpen(false)}
               onCommandCommit={(command) => void handleTerminalCommandCommit(command)}

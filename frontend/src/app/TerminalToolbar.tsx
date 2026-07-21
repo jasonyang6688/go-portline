@@ -1,5 +1,6 @@
 import { Icon } from "./Icon";
 import { metricTone } from "./appHelpers";
+import { terminalSessionPrimaryAction } from "./terminalSessions";
 import type { TerminalDock } from "./terminalViewTypes";
 
 type TerminalToolbarProps = {
@@ -10,7 +11,10 @@ type TerminalToolbarProps = {
   terminalMemory: number;
   terminalCPUHistory: number[];
   terminalCPUHistoryMax: number;
+  activeSessionStatus: string | null;
+  reconnecting: boolean;
   onCloseActiveSession: () => void;
+  onReconnectActiveSession: () => void;
   onToggleMonitorDock: () => void;
   onToggleFilesDock: () => void;
   onToggleHistoryDock: () => void;
@@ -24,11 +28,24 @@ export function TerminalToolbar({
   terminalMemory,
   terminalCPUHistory,
   terminalCPUHistoryMax,
+  activeSessionStatus,
+  reconnecting,
   onCloseActiveSession,
+  onReconnectActiveSession,
   onToggleMonitorDock,
   onToggleFilesDock,
   onToggleHistoryDock,
 }: TerminalToolbarProps) {
+  const primaryAction = terminalSessionPrimaryAction(activeSessionStatus, reconnecting);
+  const isReconnectAction = primaryAction === "reconnect" || primaryAction === "reconnecting";
+  const primaryActionLabel = primaryAction === "reconnecting"
+    ? "Reconnecting active session"
+    : isReconnectAction
+      ? "Reconnect active session"
+      : primaryAction === "close"
+        ? "Close active session"
+        : "No active session";
+
   return (
     <div className="term-toolbar">
       <div className="tt-host tt-host-compact">
@@ -54,13 +71,15 @@ export function TerminalToolbar({
         </div>
       ) : null}
       <button
-        className="tt-vital power"
+        className={`tt-vital power${isReconnectAction ? " reconnect" : ""}`}
         type="button"
-        aria-label="Power"
-        title="Close active session"
-        onClick={onCloseActiveSession}
+        aria-label={primaryActionLabel}
+        aria-busy={primaryAction === "reconnecting"}
+        title={primaryActionLabel}
+        disabled={primaryAction === "disabled" || primaryAction === "reconnecting"}
+        onClick={isReconnectAction ? onReconnectActiveSession : onCloseActiveSession}
       >
-        ⏻
+        {isReconnectAction ? <Icon name="refresh" size={14} /> : "⏻"}
       </button>
       <button
         className={`tt-btn${terminalDock === "monitor" ? " active" : ""}`}

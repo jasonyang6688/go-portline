@@ -17,6 +17,7 @@ import {
 } from "./terminalReplay";
 import type { CommandHistoryScope } from "./TerminalHistoryDock";
 import { canInteractWithSession } from "./terminalSessions";
+import type { SessionReconnectAttempt, SessionReconnectInputStore } from "./terminalViewTypes";
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -35,6 +36,8 @@ type UseTerminalActionsOptions = {
   terminalDisplayPath: string;
   terminalDisplayUser: string;
   refreshCommandHistory: (scope?: CommandHistoryScope) => Promise<void>;
+  reconnectAttemptRef: MutableRefObject<SessionReconnectAttempt | null>;
+  reconnectInputsRef: MutableRefObject<SessionReconnectInputStore>;
   setActiveSessionId: Dispatch<SetStateAction<string | null>>;
   setCommandHistory: Dispatch<SetStateAction<CommandHistoryEntry[]>>;
   setFullscreenTerminalSessions: Dispatch<SetStateAction<Record<string, boolean>>>;
@@ -60,6 +63,8 @@ export function useTerminalActions({
   terminalDisplayPath,
   terminalDisplayUser,
   refreshCommandHistory,
+  reconnectAttemptRef,
+  reconnectInputsRef,
   setActiveSessionId,
   setCommandHistory,
   setFullscreenTerminalSessions,
@@ -96,6 +101,10 @@ export function useTerminalActions({
     if (!session) {
       return;
     }
+    if (reconnectAttemptRef.current?.sessionId === sessionId) {
+      reconnectAttemptRef.current = null;
+    }
+    reconnectInputsRef.current.delete(sessionId);
     setSessions((current) => current.filter((item) => item.id !== sessionId));
     setTerminalBuffers((current) => {
       const next = { ...current };
