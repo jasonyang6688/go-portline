@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -498,7 +499,7 @@ func TestLocalFileOperationsReadSaveCreateRenameDelete(t *testing.T) {
 	foundLowercaseFolder := false
 	for _, file := range files {
 		if file.Name == "lowercase-folder" && file.IsDir {
-			if file.Owner == "" || file.Group == "" {
+			if runtime.GOOS != "windows" && (file.Owner == "" || file.Group == "") {
 				t.Fatalf("local file owner/group = %q/%q, want non-empty user and group", file.Owner, file.Group)
 			}
 			foundLowercaseFolder = true

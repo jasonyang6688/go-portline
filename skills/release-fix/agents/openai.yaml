@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Fix"
+  short_description: "Safely commit, tag, and push completed fixes"
+  default_prompt: "Use $release-fix to publish a verified bug fix with the next patch tag."

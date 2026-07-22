@@ -27,6 +27,10 @@ For development, maintenance, and bug fixes, use the user-level `careful-dev-qa`
 
 Recent commits use short imperative subjects, for example `Preserve terminal output across session switches` and `Close the terminal late-event race synchronously`. Follow that style: describe the user-visible or behavioral change, not the implementation chore. Pull requests should include a concise summary, test results, linked issue or plan when applicable, and screenshots or recordings for visible UI changes.
 
+## Fix Release Workflow
+
+After every completed and verified bug fix, use the project skill at `skills/release-fix/SKILL.md`. The user grants standing authorization to create a scoped `fix:` commit, increment the latest stable semantic version patch tag, and atomically push the current branch plus tag to `origin` without asking again. This authorization applies only to verified bug fixes in this repository: preserve unrelated work, never force-push or reuse tags, and stop when the skill's guardrails require user input.
+
 ## Agent-Specific Instructions
 
 Before implementing design work from `ux/`, read `ux/README.md` and the referenced prototype files. Treat `frontend/wailsjs` as generated output and keep manual changes focused on source files under `internal/` and `frontend/src/`.
