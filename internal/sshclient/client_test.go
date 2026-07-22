@@ -305,6 +305,24 @@ func TestRealSessionStartAfterCloseReturnsError(t *testing.T) {
 	}
 }
 
+func TestRealSessionCloseStopsKeepalivesOnce(t *testing.T) {
+	keepaliveStop := make(chan struct{})
+	session := &realSession{keepaliveStop: keepaliveStop}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+
+	select {
+	case <-keepaliveStop:
+	default:
+		t.Fatal("Close() did not stop keepalives")
+	}
+}
+
 func TestNormalizeSize(t *testing.T) {
 	size := NormalizeSize(domain.TerminalSize{})
 	if size.Cols != 120 || size.Rows != 32 {

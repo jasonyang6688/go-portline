@@ -78,11 +78,12 @@ func (r RealRunner) Test(req ConnectRequest) error {
 }
 
 type realSession struct {
-	client *gossh.Client
-	mu     sync.Mutex
-	shell  *gossh.Session
-	stdin  io.WriteCloser
-	closed bool
+	client        *gossh.Client
+	mu            sync.Mutex
+	shell         *gossh.Session
+	stdin         io.WriteCloser
+	keepaliveStop chan struct{}
+	closed        bool
 }
 
 func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExit func(error)) error {
@@ -152,15 +153,19 @@ func (s *realSession) Start(size domain.TerminalSize, onData func([]byte), onExi
 	}
 	s.shell = shell
 	s.stdin = stdin
+	keepaliveStop := make(chan struct{})
+	s.keepaliveStop = keepaliveStop
 	s.mu.Unlock()
 
 	go copyOutput(stdout, onData)
 	go copyOutput(stderr, onData)
+	go keepSSHConnectionAlive(client, keepaliveStop)
 
 	go func() {
 		err := shell.Wait()
 
 		s.mu.Lock()
+		s.stopKeepalivesLocked()
 		s.closed = true
 		s.shell = nil
 		s.stdin = nil
@@ -444,6 +449,7 @@ func (s *realSession) Close() error {
 	s.mu.Lock()
 	shell := s.shell
 	client := s.client
+	s.stopKeepalivesLocked()
 	s.closed = true
 	s.stdin = nil
 	s.shell = nil
@@ -458,6 +464,14 @@ func (s *realSession) Close() error {
 	}
 
 	return nil
+}
+
+func (s *realSession) stopKeepalivesLocked() {
+	if s.keepaliveStop == nil {
+		return
+	}
+	close(s.keepaliveStop)
+	s.keepaliveStop = nil
 }
 
 func (s *realSession) newSFTPClient() (*sftp.Client, error) {
