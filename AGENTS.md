@@ -29,7 +29,7 @@ Recent commits use short imperative subjects, for example `Preserve terminal out
 
 ## Fix Release Workflow
 
-After every completed and verified bug fix, use the project skill at `skills/release-fix/SKILL.md`. The user grants standing authorization to create a scoped `fix:` commit, increment the latest stable semantic version patch tag, and atomically push the current branch plus tag to `origin` without asking again. This authorization applies only to verified bug fixes in this repository: preserve unrelated work, never force-push or reuse tags, and stop when the skill's guardrails require user input.
+After every completed and verified bug fix, use the project skill at `skills/release-fix/SKILL.md`. A fresh `wails build` in the current working tree must succeed before any fix release is staged or committed. The user grants standing authorization to create a scoped `fix:` commit, increment the latest stable semantic version patch tag, and atomically push the current branch plus tag to `origin` without asking again. This authorization applies only to verified bug fixes in this repository: preserve unrelated work, never force-push or reuse tags, and stop when the skill's guardrails require user input.
 
 ## Agent-Specific Instructions
 

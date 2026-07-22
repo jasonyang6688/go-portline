@@ -9,7 +9,7 @@ Publish every completed bug fix as the next patch release. The project grants st
 
 ## Workflow
 
-1. Run fresh verification appropriate to the change. Require `go test ./...`, `go build ./...`, and `git diff --check`; include UI browser QA when the project rules require it.
+1. Run fresh verification in the current working tree. Require `go test ./...`, `go build ./...`, `wails build`, and `git diff --check` for every fix release; `wails build` must succeed before staging or committing. Include UI browser QA when the project rules require it. Stop before staging, commit, tag, or push if any required command fails.
 2. Fetch `origin` and tags. Stop if the current branch is behind/diverged, verification fails, or review finds an unresolved critical/high issue.
 3. Inspect the full diff for secrets and unrelated work. Record the intended release paths and require the index to be empty before staging; stop if `git diff --cached --name-only` reports pre-existing staged files.
 4. Stage the exact intended paths only; never use `git add -A`. Require `git diff --cached --name-only` to match the intended path list exactly, then run `git diff --cached --check` and review the complete staged diff.
