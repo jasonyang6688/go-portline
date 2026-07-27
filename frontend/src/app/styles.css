@@ -31,6 +31,9 @@
   --actbar-w: 48px;
   --sidebar-w: 224px;
   --statusbar-h: 22px;
+  --terminal-input-h: 40px;
+  --terminal-broadcast-h: 32px;
+  --terminal-dock-w: clamp(440px, 28vw, 580px);
   --font-ui: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   --r-sm: 4px;
@@ -88,6 +91,9 @@ button {
 }
 
 .app {
+  --file-editor-dock-bottom: calc(var(--statusbar-h) + 10px);
+  --file-editor-dock-right: 14px;
+
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -97,6 +103,26 @@ button {
   background: var(--crust);
   color: var(--text);
   user-select: none;
+}
+
+.app[data-active-view="terminal"][data-terminal-fullscreen="false"] {
+  --file-editor-dock-bottom: calc(var(--statusbar-h) + var(--terminal-input-h) + 10px);
+}
+
+.app[data-active-view="terminal"][data-terminal-fullscreen="false"][data-terminal-broadcast="true"] {
+  --file-editor-dock-bottom: calc(
+    var(--statusbar-h) + var(--terminal-input-h) + var(--terminal-broadcast-h) + 10px
+  );
+}
+
+.app[data-active-view="terminal"][data-terminal-dock]:not([data-terminal-dock="none"]) {
+  --file-editor-dock-right: calc(var(--terminal-dock-w) + 14px);
+}
+
+.app[data-active-view="terminal"][data-terminal-fullscreen="false"][data-terminal-smart="true"] .file-editor-dock {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
 }
 
 .app-body {
@@ -1296,7 +1322,7 @@ button {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  width: clamp(440px, 28vw, 580px);
+  width: var(--terminal-dock-w);
   min-height: 0;
   overflow: hidden;
   font-family: var(--font-ui);
@@ -1815,7 +1841,7 @@ button {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  width: clamp(440px, 28vw, 580px);
+  width: var(--terminal-dock-w);
   min-height: 0;
   overflow: hidden;
   font-family: var(--font-ui);
@@ -3589,12 +3615,12 @@ button {
 
 .file-editor-dock {
   position: fixed;
-  right: 14px;
-  bottom: calc(var(--statusbar-h) + 10px);
+  right: var(--file-editor-dock-right);
+  bottom: var(--file-editor-dock-bottom);
   z-index: 230;
   display: flex;
   gap: 6px;
-  max-width: calc(100vw - 28px);
+  max-width: calc(100vw - var(--file-editor-dock-right) - 14px);
   padding: 6px;
   overflow-x: auto;
   background: rgba(24, 25, 38, 0.88);
@@ -3602,6 +3628,7 @@ button {
   border-radius: var(--r);
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(12px);
+  transition: right var(--t), bottom var(--t), opacity var(--t);
 }
 
 .fe-dock-item {
@@ -7441,6 +7468,10 @@ button {
 }
 
 @media (max-width: 1100px) {
+  .app[data-active-view="terminal"][data-terminal-dock]:not([data-terminal-dock="none"]) {
+    --file-editor-dock-right: 14px;
+  }
+
   .term-files,
   .term-monitor,
   .tt-vitals {

@@ -576,7 +576,15 @@ export default function App() {
   const hideStatusBar = activeView === "terminal" && activeTerminalFullscreen;
   const showConnectionSidebar = activeView !== "commands" && activeView !== "settings";
   return (
-    <div className="app" data-theme={theme}>
+    <div
+      className="app"
+      data-theme={theme}
+      data-active-view={activeView}
+      data-terminal-fullscreen={activeTerminalFullscreen}
+      data-terminal-broadcast={terminalBroadcast}
+      data-terminal-smart={terminalSmartOpen}
+      data-terminal-dock={terminalDock ?? "none"}
+    >
       <TitleBar
         activeSessionId={activeSessionId}
         clock={clock}
